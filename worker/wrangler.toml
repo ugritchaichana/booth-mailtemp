@@ -1,0 +1,19 @@
+name = "capture-worker"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+workers_dev = false
+send_metrics = false
+
+[triggers]
+crons = ["*/5 * * * *"]
+
+[vars]
+BRIDGE_URL = "https://bridge.booth.pp.ua/ingest"
+LAST_RESORT = "rethrow"
+
+[[kv_namespaces]]
+binding = "CAPTURE_FALLBACK"
+id = "5b112b2f57b04c9fafcc4510dacd3755"
+
+[observability]
+enabled = true

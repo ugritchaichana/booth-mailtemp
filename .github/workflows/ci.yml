@@ -1,0 +1,109 @@
+name: ci
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            worker/package-lock.json
+            e2e-helper/package-lock.json
+
+      - name: Generate local secrets
+        run: bash setup.sh
+
+      - name: Build images
+        run: docker compose build bridge inbox
+
+      - name: Syntax check
+        run: |
+          find bridge inbox worker tools \
+            \( -name node_modules -o -name .wrangler -o -name dist \) -prune -o \
+            \( -name '*.js' -o -name '*.mjs' \) -print0 |
+            xargs -0 -n1 node --check
+
+      - name: Worker bundle (dry run, no Cloudflare credentials)
+        working-directory: worker
+        run: |
+          npm ci
+          npx wrangler deploy --dry-run --outdir dist
+
+  test:
+    name: test
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: e2e-helper/package-lock.json
+
+      - name: Generate local secrets
+        run: bash setup.sh
+
+      - name: Start stack
+        run: docker compose up -d --build mailpit bridge inbox
+
+      - name: Wait for services
+        run: |
+          pass=$(grep -m1 '^MAILPIT_UI_PASSWORD=' .env | cut -d= -f2-)
+          for _ in $(seq 1 60); do
+            if curl -fsS -m 3 http://127.0.0.1:8080/healthz > /dev/null &&
+               curl -fsS -m 3 http://127.0.0.1:8090/healthz > /dev/null &&
+               curl -fsS -m 3 -u "qa:$pass" http://127.0.0.1:8025/admin/api/v1/info > /dev/null; then
+              echo "stack is up"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "stack did not become healthy in 120s"
+          exit 1
+
+      - name: Install Playwright Chromium
+        working-directory: e2e-helper
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+          path=$(node -p "require('playwright-core').chromium.executablePath()")
+          test -x "$path"
+          echo "CHROMIUM_PATH=$path" >> "$GITHUB_ENV"
+
+      - name: Isolation tests
+        run: bash inbox/test/isolation.sh
+
+      # TODO: janitor/test/janitor.sh may need the janitor service started above; adjust when it lands.
+      - name: Janitor tests
+        if: hashFiles('janitor/test/janitor.sh') != ''
+        run: bash janitor/test/janitor.sh
+
+      - name: Dump compose logs
+        if: failure()
+        run: docker compose logs --no-color
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v
