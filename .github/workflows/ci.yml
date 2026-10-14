@@ -37,10 +37,13 @@ jobs:
 
       - name: Syntax check
         run: |
-          find bridge inbox worker tools \
+          find bridge inbox janitor status-worker worker tools \
             \( -name node_modules -o -name .wrangler -o -name dist \) -prune -o \
             \( -name '*.js' -o -name '*.mjs' \) -print0 |
             xargs -0 -n1 node --check
+
+      - name: Status worker tests
+        run: node --test "status-worker/test/*.test.js"
 
       - name: Worker bundle (dry run, no Cloudflare credentials)
         working-directory: worker
