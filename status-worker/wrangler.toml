@@ -1,0 +1,11 @@
+name = "mailpit-status-fallback"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+workers_dev = false
+send_metrics = false
+
+# Page routes only; never /api/*.
+routes = [
+  { pattern = "mailpit.booth.pp.ua/", zone_name = "booth.pp.ua" },
+  { pattern = "mailpit.booth.pp.ua/index.html", zone_name = "booth.pp.ua" },
+]
