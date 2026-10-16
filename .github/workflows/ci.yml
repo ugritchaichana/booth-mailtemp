@@ -48,6 +48,9 @@ jobs:
       - name: Worker tests
         run: node --test "worker/test/*.test.js"
 
+      - name: Inbox unit tests
+        run: node --test "inbox/test/*.test.mjs"
+
       - name: Worker bundle (dry run, no Cloudflare credentials)
         working-directory: worker
         run: |
