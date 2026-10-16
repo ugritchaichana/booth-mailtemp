@@ -1,3 +1,5 @@
+import { runMonitorSafely } from "./monitor.js";
+
 const PUSH_TIMEOUT_MS = 15000;
 const KV_TTL_SECONDS = 604800;
 const REPLAY_BATCH = 15;
@@ -65,7 +67,8 @@ export default {
     }
   },
 
-  async scheduled(controller, env) {
+  async scheduled(controller, env, ctx) {
+    ctx.waitUntil(runMonitorSafely(env));
     const { keys } = await env.CAPTURE_FALLBACK.list({ limit: REPLAY_BATCH });
     for (const { name } of keys) {
       try {
