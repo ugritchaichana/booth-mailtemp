@@ -1,0 +1,866 @@
+<!doctype html>
+<html lang="en" class="h-100">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex, nofollow, noarchive">
+<link rel="icon" href="/vendor/mailpit.svg">
+<title>Mailpit</title>
+<script>
+(() => {
+  const dark = matchMedia("(prefers-color-scheme: dark)");
+  let pref = "auto";
+  try { pref = localStorage.getItem("theme") || "auto"; } catch {}
+  const apply = () => document.documentElement.setAttribute("data-bs-theme", pref === "auto" ? (dark.matches ? "dark" : "light") : pref);
+  window.themePref = () => pref;
+  window.setThemePref = (next) => { pref = next; try { localStorage.setItem("theme", next); } catch {} apply(); };
+  dark.addEventListener("change", apply);
+  apply();
+})();
+</script>
+<link rel="stylesheet" href="/vendor/app.css">
+<style>
+#preview{width:100%;height:calc(100vh - 380px);min-height:320px;border:0;background:#fff}
+.btn-copy{--bs-btn-color:var(--bs-body-bg);--bs-btn-bg:var(--bs-body-color);--bs-btn-border-color:var(--bs-body-color);--bs-btn-hover-color:var(--bs-body-bg);--bs-btn-hover-bg:var(--bs-emphasis-color);--bs-btn-hover-border-color:var(--bs-emphasis-color);--bs-btn-active-color:var(--bs-body-bg);--bs-btn-active-bg:var(--bs-emphasis-color);--bs-btn-active-border-color:var(--bs-emphasis-color)}
+#appView{min-height:0}
+#statusBanner{position:relative;z-index:1061}
+.user-wrap{width:1%;min-width:0}
+.user-wrap #user{padding-right:2.5rem}
+.user-wrap #user:focus{position:relative;z-index:5}
+.user-wrap .random-btn{width:2rem;height:2rem;padding:0;display:inline-flex;align-items:center;justify-content:center;color:var(--bs-secondary-color);text-decoration:none;z-index:6}
+.user-wrap .random-btn:hover:not(:disabled){color:var(--bs-body-color);background:var(--bs-secondary-bg)}
+.account-scroll{max-height:min(40vh,18rem);overflow-y:auto;overscroll-behavior:contain}
+.account-row .account-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#spot{position:fixed;inset:0;z-index:1060;pointer-events:none}
+#spotDim{position:absolute;inset:0;background:rgba(0,0,0,.72);pointer-events:auto}
+#spotRing{position:absolute;border-radius:.6rem;box-shadow:0 0 0 3px #fff,0 0 18px 4px rgba(255,255,255,.55);animation:spotPulse 1.6s ease-in-out infinite}
+#spotArrow{font-size:1.25rem;vertical-align:-.2rem}
+#spotHint{position:absolute;width:max-content;max-width:min(340px,calc(100vw - 32px));padding:.55rem .8rem;border-radius:.5rem;background:var(--bs-body-bg);color:var(--bs-body-color);box-shadow:0 .5rem 1.5rem rgba(0,0,0,.4);font-size:.9rem}
+@keyframes spotPulse{50%{box-shadow:0 0 0 3px #fff,0 0 26px 8px rgba(255,255,255,.3)}}
+@media (prefers-reduced-motion:reduce){#spotRing{animation:none}}
+#addModal .modal-dialog{max-width:440px}
+.list-head{position:sticky;top:0;z-index:2}
+.sort-btn{color:inherit;text-decoration:none;font-weight:600}
+.sort-btn:hover{text-decoration:underline}
+#chips .btn.active{--bs-btn-active-color:var(--bs-body-bg);--bs-btn-active-bg:var(--bs-body-color);--bs-btn-active-border-color:var(--bs-body-color)}
+[data-bs-theme=dark] #chips .btn-outline-secondary.active,[data-bs-theme=dark] #chips .btn-outline-secondary.active:hover{color:var(--bs-btn-active-color)}
+</style>
+</head>
+<body class="h-100">
+<div class="container-fluid h-100 d-flex flex-column" id="app">
+  <div id="statusBanner" class="alert alert-danger rounded-0 border-0 mb-0 text-center py-2 small flex-shrink-0 d-none" style="margin-left:calc(var(--bs-gutter-x) * -.5);margin-right:calc(var(--bs-gutter-x) * -.5)" role="status"></div>
+
+  <div id="appView" class="d-flex flex-column flex-fill">
+    <div id="navList" class="navbar navbar-expand-lg row flex-shrink-0 bg-primary text-white d-print-none" data-bs-theme="dark">
+      <div class="col-xl-2 col-md-3 col-auto pe-0"><a href="#/" class="navbar-brand text-white me-0"><img src="/vendor/mailpit.svg" alt="Mailpit"><span class="ms-2 d-none d-sm-inline">Mailpit</span></a></div>
+      <div class="col col-md-4k col-lg-5 col-xl-6">
+        <form id="searchForm">
+          <div class="input-group flex-nowrap">
+            <div class="ms-md-2 d-flex border bg-body rounded-start flex-fill position-relative">
+              <input id="search" type="text" class="form-control border-0" aria-label="Search" placeholder="Search mailbox" autocomplete="off">
+            </div>
+            <button class="btn btn-outline-secondary" type="submit" aria-label="Search"><i class="bi bi-search"></i></button>
+          </div>
+        </form>
+      </div>
+      <div class="col-12 col-md-auto col-lg-4 col-xl-4 text-end mt-2 mt-md-0">
+        <div class="float-start d-md-none"><button class="btn btn-outline-light me-2" type="button" data-act="openMenu" aria-label="Toggle sidebar"><i class="bi bi-list"></i></button></div>
+        <small id="countText"></small>
+      </div>
+    </div>
+
+    <div id="navView" class="navbar navbar-expand-lg row flex-shrink-0 bg-primary text-white d-print-none d-none" data-bs-theme="dark">
+      <div class="d-none d-xl-block col-xl-3 col-auto pe-0"><a href="#/" class="navbar-brand text-white me-0"><img src="/vendor/mailpit.svg" alt="Mailpit"><span class="ms-2 d-none d-sm-inline">Mailpit</span></a></div>
+      <div class="col col-xl-5">
+        <a id="backLink" href="#/" class="btn btn-outline-light me-3 d-xl-none" title="Return to messages"><i class="bi bi-arrow-return-left"></i><span class="ms-2 d-none d-lg-inline">Back</span></a>
+        <button class="btn btn-outline-light me-1 me-sm-2" type="button" data-act="delete" title="Delete message"><i class="bi bi-trash-fill me-md-2"></i><span class="d-none d-md-inline">Delete</span></button>
+      </div>
+      <div class="col-auto col-lg-4 col-xl-4 text-end">
+        <div class="dropdown d-inline-block">
+          <button type="button" class="btn btn-outline-light dropdown-toggle" data-act="download-menu" aria-label="Download"><i class="bi bi-file-arrow-down-fill"></i><span class="d-none d-md-inline ms-1">Download</span></button>
+          <ul id="downloadMenu" class="dropdown-menu dropdown-menu-end" data-bs-popper="static"></ul>
+        </div>
+        <a id="prevMsg" class="btn btn-outline-light ms-1 ms-sm-2 me-1" title="View previous message"><i class="bi bi-caret-left-fill"></i></a>
+        <a id="nextMsg" class="btn btn-outline-light" title="View next message"><i class="bi bi-caret-right-fill"></i></a>
+      </div>
+    </div>
+
+    <div id="offcanvas" class="offcanvas-md offcanvas-start d-md-none" tabindex="-1" aria-labelledby="offcanvasLabel">
+      <div class="offcanvas-header"><h5 id="offcanvasLabel" class="offcanvas-title">Mailpit</h5><button type="button" class="btn-close" data-act="closeMenu" aria-label="Close"></button></div>
+      <div class="offcanvas-body pb-0"><div id="offBody" class="d-flex flex-column h-100"></div></div>
+    </div>
+    <div id="backdrop" class="offcanvas-backdrop fade d-none" data-act="closeMenu"></div>
+
+    <div class="row flex-fill" style="min-height:0">
+      <div id="sideList" class="d-none d-md-flex h-100 col-xl-2 col-md-3 flex-column"></div>
+      <div id="sideView" class="d-none h-100 flex-column">
+        <div class="list-group my-2"><a id="returnLink" href="#/" class="list-group-item list-group-item-action"><i class="bi bi-arrow-return-left me-1"></i><span class="ms-1">Return to inbox</span></a></div>
+        <div id="MessageList" class="flex-grow-1 overflow-y-auto px-1 me-n1"><div id="compactList" class="list-group"></div></div>
+        <div id="viewFooter"></div>
+      </div>
+      <div id="main" class="d-flex flex-column col-xl-10 col-md-9 mh-100 ps-0 ps-md-2 pe-0">
+        <div id="listBar" class="flex-shrink-0 pt-2 pb-1 px-2 px-md-0">
+          <div class="d-flex align-items-center flex-wrap gap-2">
+            <button id="refreshBtn" type="button" class="btn btn-sm btn-outline-secondary" data-act="refresh" title="Fetch new mail (available again after 5 seconds)"><i class="bi bi-arrow-clockwise me-1"></i><span id="refreshLabel">Refresh</span></button>
+            <div id="chips" class="d-flex align-items-center flex-wrap gap-2" role="group" aria-label="Sort and filter"></div>
+          </div>
+          <div id="listNote" class="small text-muted mt-1 d-none" role="status"></div>
+        </div>
+        <div id="message-page" class="flex-fill mh-100" style="overflow-y:auto;min-height:0"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="spot" class="d-none">
+  <div id="spotDim"></div>
+  <div id="spotRing"></div>
+  <div id="spotHint" role="status"><i id="spotArrow" class="bi bi-arrow-left-short me-1"></i>Add an address to open your inbox</div>
+</div>
+
+<div id="addBackdrop" class="modal-backdrop show d-none"></div>
+<div id="addModal" class="modal" tabindex="-1" role="dialog" aria-modal="true" aria-labelledby="addTitle" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <form id="form" novalidate>
+        <div class="modal-header border-0 pb-0">
+          <h5 id="addTitle" class="modal-title">Add address</h5>
+          <button id="addClose" type="button" class="btn-close d-none" data-act="closeModal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <label class="form-label small" for="user">Email address</label>
+          <div class="input-group flex-nowrap mb-3">
+            <div class="position-relative flex-grow-1 user-wrap">
+              <input id="user" class="form-control rounded-end-0" placeholder="username" autocomplete="off" autocapitalize="none" spellcheck="false" required aria-describedby="addNote authErr">
+              <button id="randomBtn" type="button" class="btn btn-sm btn-link random-btn position-absolute top-50 end-0 translate-middle-y me-1" data-act="random" aria-label="Random username" title="Random username"><i id="randomIcon" class="bi bi-shuffle"></i><span id="randomCount" class="d-none"></span></button>
+            </div>
+            <span class="input-group-text">@booth.pp.ua</span>
+          </div>
+          <div id="authErr" class="alert alert-danger py-2 small d-none" role="alert"></div>
+          <button id="go" type="submit" class="btn btn-primary w-100">Open inbox</button>
+          <p id="addNote" class="small text-muted text-center mt-3 mb-0">Names are shared: anyone who opens a name sees its mail. A new name creates a new inbox. Use <code>name+tag</code>, such as <code>test+1</code>, for a separate inbox.</p>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<template id="sideTpl">
+  <div class="flex-grow-1 overflow-y-auto me-n3 pe-3">
+    <div class="list-group my-2">
+      <a href="#/" class="list-group-item list-group-item-action active"><i class="bi bi-envelope-fill me-1"></i><span class="ms-1">Inbox</span><span class="badge rounded-pill text-bg-light float-end d-none" data-unread></span></a>
+    </div>
+    <div class="address-block mt-4 px-1">
+      <div class="text-muted small">Your address</div>
+      <div class="text-break fw-semibold mb-2" data-addr></div>
+      <button type="button" class="btn btn-sm btn-copy w-100" data-act="copy"><i class="bi bi-clipboard me-1" data-copy-icon></i><span data-copy-label>Copy address</span></button>
+      <div class="mt-2 text-muted small">Also receives <code>name+tag@booth.pp.ua</code></div>
+    </div>
+    <div class="mt-4 px-1 text-muted small" data-accounts-label>Addresses in this browser</div>
+    <div class="list-group account-scroll position-relative mt-1 mb-2" data-accounts></div>
+    <button type="button" class="btn btn-sm btn-outline-secondary w-100 mb-3" data-act="add"><i class="bi bi-plus-lg me-1"></i>Add address</button>
+  </div>
+  <div class="bg-body ms-sm-n1 me-sm-n1 py-2 text-muted small about-mailpit">
+    <span class="ms-1"><i class="bi bi-person-circle me-1"></i><span data-user></span></span>
+    <button type="button" class="btn btn-sm btn-outline-secondary float-end" data-act="theme" title="Theme: auto / light / dark"><i class="bi bi-circle-half" data-theme-icon></i></button>
+  </div>
+</template>
+
+<script type="module">
+import { DEFAULT_SORT, clearFilters, filterMessages, formatHash, formatSort, hasFilters, nextSort, orderAccounts, parseHash, parseSort, people, person, senderOptions, sortMessages } from "/listview.js";
+import PostalMime from "/vendor/postal-mime.js";
+const $ = (selector, root = document) => root.querySelector(selector);
+const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
+const h = (tag, attrs = {}, ...kids) => {
+  const el = document.createElement(tag);
+  for (const [key, value] of Object.entries(attrs)) {
+    if (key === "class") el.className = value;
+    else if (key.startsWith("on")) el[key] = value;
+    else if (value !== false && value != null) el.setAttribute(key, value === true ? "" : value);
+  }
+  el.append(...kids.flat().filter((kid) => kid != null && kid !== false));
+  return el;
+};
+const icon = (name, extra = "") => h("i", { class: `bi bi-${name} ${extra}`.trim() });
+const THEME_ICONS = { auto: "bi-circle-half", light: "bi-sun-fill", dark: "bi-moon-stars-fill" };
+const NEXT_THEME = { auto: "light", light: "dark", dark: "auto" };
+
+let me = null;
+let messages = [];
+let truncated = false;
+let view = parseHash("");
+let chipKey = "";
+let current = null;
+let tab = "text";
+let timer = null;
+let ticking = false;
+let connectionLost = false;
+let serviceStatus = { d1: "ok" };
+const BANNERS = {
+  lost: ["danger", "Lost connection to the mail service. Retrying…"],
+  store: ["danger", "Inbox storage is unavailable. Mail already stored is safe and will show when it is back."],
+};
+const POLL_SECONDS = 30;
+const STATUS_EVERY = 2;
+const RAW_PREVIEW_BYTES = 2_000_000;
+const INLINE_IMAGE_BYTES = 8_000_000;
+
+function ago(iso) {
+  const seconds = (Date.now() - new Date(iso).getTime()) / 1000;
+  const minutes = seconds / 60;
+  const hours = minutes / 60;
+  const days = hours / 24;
+  if (seconds < 45) return "a few seconds ago";
+  if (seconds < 90) return "a minute ago";
+  if (minutes < 45) return `${Math.round(minutes)} minutes ago`;
+  if (minutes < 90) return "an hour ago";
+  if (hours < 22) return `${Math.round(hours)} hours ago`;
+  if (hours < 36) return "a day ago";
+  if (days < 26) return `${Math.round(days)} days ago`;
+  return new Date(iso).toLocaleDateString("en-GB");
+}
+
+function size(bytes) {
+  if (bytes < 1000) return `${bytes} B`;
+  if (bytes < 1e6) return `${(bytes / 1e3).toFixed(1)} kB`;
+  return bytes < 1e7 ? `${(bytes / 1e6).toFixed(1)} MB` : `${Math.round(bytes / 1e6)} MB`;
+}
+
+function fullDate(iso) {
+  const d = new Date(iso);
+  const day = d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", year: "numeric" }).replace(/^(\w+)\s/, "$1, ");
+  const time = d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true }).toLowerCase();
+  return `${day}, ${time}`;
+}
+
+async function api(path, options = {}) {
+  const res = await fetch(path, { ...options, headers: { "Content-Type": "application/json" } });
+  if (res.status === 401) { me = null; messages = []; current = null; showNoAddress(); throw new Error("401"); }
+  return res;
+}
+
+function setClass(el, value) { el.className = value; }
+
+function accountRow(name) {
+  const active = name === me.active;
+  const address = `${name}@booth.pp.ua`;
+  return h("div", { class: `list-group-item account-row d-flex align-items-center${active ? " list-group-item-primary fw-semibold" : " list-group-item-action"}`, "data-account": name },
+    h("a", { href: "#", class: "account-name flex-grow-1 text-reset text-decoration-none", "data-act": "switch", "data-name": name, title: `Open ${address}` }, icon(active ? "check-circle-fill" : "circle", "me-2"), name),
+    h("button", { type: "button", class: "btn btn-sm btn-outline-secondary ms-2", "data-act": "forget", "data-name": name, title: `Remove ${address} from this browser`, "aria-label": `Remove ${address} from this browser` }, icon("x-lg")));
+}
+
+function fillSidebar(root) {
+  const old = $("[data-accounts]", root);
+  const previous = old ? { active: old.dataset.active, top: old.scrollTop } : null;
+  root.replaceChildren(...$("#sideTpl").content.cloneNode(true).children);
+  $(".address-block", root).classList.toggle("d-none", !me);
+  $("[data-addr]", root).textContent = me?.address ?? "";
+  $("[data-user]", root).textContent = me?.active ?? "No address";
+  $("[data-theme-icon]", root).className = `bi ${THEME_ICONS[window.themePref()]}`;
+  const list = $("[data-accounts]", root);
+  list.replaceChildren(...orderAccounts(me?.accounts ?? []).map(accountRow));
+  const selected = $(".list-group-item-primary", list);
+  if (previous && previous.active === (me?.active ?? "")) list.scrollTop = previous.top;
+  else if (selected) list.scrollTop = Math.max(0, selected.offsetTop - (list.clientHeight - selected.offsetHeight) / 2);
+  list.dataset.active = me?.active ?? "";
+  $("[data-accounts-label]", root).classList.toggle("d-none", !me);
+  $("[data-act=add]", root).classList.toggle("mt-3", !me);
+  const unread = messages.filter((m) => !m.read).length;
+  const badge = $("[data-unread]", root);
+  badge.textContent = unread;
+  badge.classList.toggle("d-none", unread === 0);
+}
+
+function refreshSidebars() {
+  fillSidebar($("#sideList"));
+  fillSidebar($("#offBody"));
+  const footer = $("#viewFooter");
+  footer.replaceChildren(...$("#sideTpl").content.cloneNode(true).children);
+  $(".flex-grow-1", footer).remove();
+  $("[data-user]", footer).textContent = me?.active ?? "No address";
+  $("[data-theme-icon]", footer).className = `bi ${THEME_ICONS[window.themePref()]}`;
+}
+
+const SORT_LABELS = [["received.desc", "Received: newest first"], ["received.asc", "Received: oldest first"], ["from.asc", "From: A to Z"], ["from.desc", "From: Z to A"], ["subject.asc", "Subject: A to Z"], ["subject.desc", "Subject: Z to A"], ["size.desc", "Size: largest first"], ["size.asc", "Size: smallest first"]];
+const RANGE_LABELS = [["1h", "1h"], ["today", "Today"], ["7d", "7d"]];
+
+function visible() {
+  return sortMessages(filterMessages(messages, view, { now: Date.now() }), view.sort);
+}
+
+function saveSort() { try { localStorage.setItem("inboxSort", formatSort(view.sort)); } catch {} }
+function storedSort() { try { return parseSort(localStorage.getItem("inboxSort")) ?? DEFAULT_SORT; } catch { return DEFAULT_SORT; } }
+
+function commitView() {
+  try { history.replaceState(null, "", formatHash(view)); } catch {}
+  if ($("#search").value !== view.q) $("#search").value = view.q;
+  renderList();
+}
+
+function changeView(patch) {
+  view = { ...view, ...patch };
+  commitView();
+}
+
+function changeSort(sort) {
+  view = { ...view, sort };
+  saveSort();
+  commitView();
+}
+
+function chip(label, pressed, onclick, extra = {}) {
+  return h("button", { type: "button", class: `btn btn-sm btn-outline-secondary${pressed ? " active" : ""}`, "aria-pressed": String(pressed), onclick, ...extra }, label);
+}
+
+function renderChips() {
+  const senders = senderOptions(messages);
+  const key = JSON.stringify([view, senders]);
+  if (key === chipKey) return;
+  chipKey = key;
+  const focused = document.activeElement?.dataset?.chip;
+  const senderList = !view.from || senders.some((s) => s.value === view.from) ? senders : [...senders, { value: view.from, label: view.from, count: 0 }];
+  const senderSelect = h("select", { class: "form-select form-select-sm w-auto mw-100", "aria-label": "Sender", "data-chip": "sender", onchange: (e) => changeView({ from: e.target.value }) },
+    h("option", { value: "" }, "All senders"),
+    senderList.map((s) => h("option", { value: s.value }, `${s.label} (${s.count})`)));
+  senderSelect.value = view.from;
+  const sortSelect = h("select", { class: "form-select form-select-sm w-auto d-lg-none", "aria-label": "Sort by", "data-chip": "sort", onchange: (e) => changeSort(parseSort(e.target.value) ?? DEFAULT_SORT) },
+    SORT_LABELS.map(([value, label]) => h("option", { value }, `Sort by ${label}`)));
+  sortSelect.value = formatSort(view.sort);
+  $("#chips").replaceChildren(...[
+    sortSelect,
+    chip("Unread", view.unread, () => changeView({ unread: !view.unread }), { "data-chip": "unread" }),
+    chip("Has attachment", view.att, () => changeView({ att: !view.att }), { "data-chip": "att" }),
+    RANGE_LABELS.map(([value, label]) => chip(label, view.range === value, () => changeView({ range: view.range === value ? "" : value }), { "data-chip": `range-${value}` })),
+    senders.length || view.from ? senderSelect : null,
+    hasFilters(view) ? h("button", { type: "button", class: "btn btn-sm btn-link", "data-act": "clearFilters" }, "Clear") : null,
+  ].flat().filter(Boolean));
+  if (focused) $$("[data-chip]", $("#chips")).find((el) => el.dataset.chip === focused)?.focus({ preventScroll: true });
+}
+
+function listHead() {
+  const arrow = (key) => (view.sort.key === key ? icon(view.sort.dir === "asc" ? "caret-up-fill" : "caret-down-fill", "ms-1") : null);
+  const state = (key) => (view.sort.key === key ? `, ${view.sort.dir === "asc" ? "ascending" : "descending"}` : "");
+  const button = (key, label) => h("button", { type: "button", class: "btn btn-link btn-sm p-0 sort-btn text-nowrap", "data-sort": key, title: `Sort by ${label}`, "aria-label": `Sort by ${label}${state(key)}`, onclick: () => changeSort(nextSort(view.sort, key)) }, label, arrow(key));
+  return h("div", { class: "row gx-1 small list-group-item bg-body-tertiary border-start-0 border-end-0 d-none d-lg-flex w-100 list-head" },
+    h("div", { class: "col-lg-3" }, button("from", "From")),
+    h("div", { class: "col-lg-6 col-xxl-7" }, button("subject", "Subject")),
+    h("div", { class: "col-1 text-end" }, button("size", "Size")),
+    h("div", { class: "col-2 col-xxl-1 text-end" }, button("received", "Received")));
+}
+
+function listRow(m) {
+  const from = person(m.from);
+  return h("a", { href: `#/view/${m.id}`, id: m.id, class: `row gx-1 message d-flex small list-group-item list-group-item-action border-start-0 border-end-0${m.read ? " read" : ""}` },
+    h("div", { class: "col-lg-3" },
+      h("div", { class: "d-lg-none float-end text-muted text-nowrap small" }, m.attachments ? icon("paperclip", "h6 me-1") : null, ` ${ago(m.created)}`),
+      h("div", { class: "overflow-x-hidden" }, h("div", { class: "text-truncate" }, h("b", { title: `From: ${m.from?.Address ?? ""}` }, from))),
+      h("div", { class: "overflow-x-hidden" }, h("div", { class: "text-truncate text-muted small" }, `To: ${people(m.to)}`))),
+    h("div", { class: "col-lg-6 col-xxl-7 mt-2 mt-lg-0" },
+      h("div", { class: "subject text-truncate text-spaces-nowrap" }, h("b", {}, m.subject || "(no subject)")),
+      h("div", { class: "small text-muted text-truncate" }, m.snippet)),
+    h("div", { class: "d-none d-lg-block col-1 small text-end text-muted" }, m.attachments ? icon("paperclip", "float-start h6") : null, ` ${size(m.size)}`),
+    h("div", { class: "d-none d-lg-block col-2 col-xxl-1 small text-end text-muted" }, ago(m.created)));
+}
+
+function compactRow(m) {
+  return h("a", { href: `#/view/${m.id}`, class: `row gx-1 message d-flex small list-group-item list-group-item-action message${m.read ? " read" : ""}${m.id === current?.id ? " active" : ""}` },
+    h("div", { class: "col overflow-x-hidden" }, h("div", { class: "text-truncate small" }, h("b", {}, person(m.from)))),
+    h("div", { class: "col-auto small" }, m.attachments ? icon("paperclip", "h6") : null, ` ${ago(m.created)}`),
+    h("div", { class: "col-12 overflow-x-hidden" }, h("div", { class: "text-truncate small" }, `To: ${people(m.to)}`)),
+    h("div", { class: "col-12 overflow-x-hidden mt-1" }, h("div", { class: "text-truncates small" }, h("b", {}, m.subject || "(no subject)"))));
+}
+
+function renderList() {
+  const shown = visible();
+  const focused = document.activeElement?.dataset?.sort;
+  $("#countText").replaceChildren(`${shown.length} `, h("small", {}, "of"), ` ${messages.length}`);
+  renderChips();
+  const note = $("#listNote");
+  note.classList.toggle("d-none", !truncated);
+  note.textContent = truncated ? "This inbox may hold more mail than is loaded. Sorting and filters apply to the loaded mail only." : "";
+  const empty = shown.length ? null : h("p", { class: "text-muted p-3" }, !me ? "No address yet. Use Add address to open an inbox." : messages.length ? "No matching messages" : "No messages yet.");
+  $("#message-page").replaceChildren(...[messages.length ? h("div", { class: "list-group my-2" }, listHead(), shown.map(listRow)) : null, empty].filter(Boolean));
+  if (focused) $$("[data-sort]").find((el) => el.dataset.sort === focused)?.focus({ preventScroll: true });
+}
+
+function renderCompact() {
+  const shown = visible();
+  $("#compactList").replaceChildren(...shown.map(compactRow));
+  let order = shown;
+  let index = order.findIndex((m) => m.id === current?.id);
+  if (index < 0) { order = messages; index = order.findIndex((m) => m.id === current?.id); }
+  const link = (el, target) => { if (target) el.setAttribute("href", `#/view/${target.id}`); else el.removeAttribute("href"); el.classList.toggle("disabled", !target); };
+  link($("#prevMsg"), order[index - 1]);
+  link($("#nextMsg"), order[index + 1]);
+}
+
+async function refresh() {
+  try {
+    const body = await (await api("/api/messages")).json();
+    messages = body.messages;
+    truncated = body.truncated === true;
+  } catch { return; }
+  refreshSidebars();
+  if (current) renderCompact(); else renderList();
+}
+
+function tabButton(id, label) {
+  return h("button", { class: `nav-link${tab === id ? " show active" : ""}`, type: "button", role: "tab", onclick: () => { tab = id; renderMessage(); } }, label);
+}
+
+const flat = (list) => (list ?? []).flatMap((p) => (p.group ? flat(p.group) : [{ Name: p.name ?? "", Address: p.address ?? "" }]));
+
+const dataUrl = (blob) => new Promise((resolve) => {
+  const reader = new FileReader();
+  reader.onload = () => resolve(reader.result);
+  reader.readAsDataURL(blob);
+});
+
+async function inlineImages(html, files) {
+  let budget = INLINE_IMAGE_BYTES;
+  let out = html;
+  for (const f of files) {
+    if (!f.contentId || !/^image\//.test(f.mimeType) || f.content.byteLength > budget) continue;
+    budget -= f.content.byteLength;
+    out = out.split(`cid:${f.contentId.replace(/^<|>$/g, "")}`).join(await dataUrl(new Blob([f.content], { type: f.mimeType })));
+  }
+  return out;
+}
+
+async function parseMessage(id, listed, raw) {
+  const parsed = await PostalMime.parse(raw);
+  const files = parsed.attachments ?? [];
+  const groups = new Map();
+  for (const header of parsed.headers ?? []) groups.set(header.originalKey, [...(groups.get(header.originalKey) ?? []), header.value]);
+  const sent = parsed.date && !Number.isNaN(Date.parse(parsed.date)) ? new Date(parsed.date).toISOString() : null;
+  return {
+    id,
+    from: parsed.from ? flat([parsed.from])[0] : listed?.from,
+    to: flat(parsed.to),
+    cc: flat(parsed.cc),
+    subject: parsed.subject ?? listed?.subject ?? "",
+    created: sent ?? listed?.created ?? new Date().toISOString(),
+    size: raw.byteLength,
+    html: parsed.html ? await inlineImages(parsed.html, files) : "",
+    text: parsed.text ?? "",
+    attachments: files.filter((f) => !f.related).map((f, i) => ({ partId: String(i), fileName: f.filename, contentType: f.mimeType, size: f.content.byteLength, content: f.content })),
+    headers: [...groups],
+    raw,
+  };
+}
+
+function attachmentCards(m) {
+  if (!m.attachments.length) return null;
+  return h("div", {}, h("hr"), h("div", { class: "row gx-1 w-100" }, m.attachments.map((f) => {
+    const kind = /pdf/.test(f.contentType) ? "file-pdf-fill" : /^image\//.test(f.contentType) ? "file-image-fill" : "file-earmark-fill";
+    return h("a", { href: "#", class: "card attachment float-start me-3 mb-3", style: "width:180px", onclick: (e) => { e.preventDefault(); saveBlob(new Blob([f.content], { type: f.contentType }), f.fileName); } },
+      h("div", { class: "card-body border-0" },
+        h("p", { class: "mb-1" }, icon(kind, "me-1"), h("small", {}, size(f.size))),
+        h("p", { class: "card-text mb-0 small text-break" }, f.fileName || "attachment")));
+  })));
+}
+
+function headerRow(label, content, small = true) {
+  return h("tr", { class: small ? "small" : "" }, h("th", { class: small ? "" : "small" }, label), h("td", {}, content));
+}
+
+function renderMessage() {
+  const m = current;
+  const tabs = [m.html ? ["html", "HTML"] : null, ["text", "Text"], ["headers", "Headers"], ["raw", "Raw"]].filter(Boolean);
+  if (!tabs.some(([id]) => id === tab)) tab = tabs[0][0];
+  const addr = (list) => (list ?? []).map((p) => h("span", { class: "me-1" }, `<${p.Address}>`));
+  const pane = h("div", { id: "nav-tabContent", class: "tab-content mb-5" });
+  const body = h("div", { id: "message-view", class: "px-2 px-md-0 mh-100" },
+    h("div", { class: "row w-100" },
+      h("div", { class: "col-md" }, h("table", { class: "messageHeaders" }, h("tbody", {},
+        headerRow("From", h("span", { class: "small" }, m.from?.Name ? `${m.from.Name} ` : "", ...addr([m.from])), false),
+        headerRow("To", h("span", {}, m.to?.map((p) => `${p.Name ? `${p.Name} ` : ""}<${p.Address}> `).join(""))),
+        m.cc?.length ? headerRow("Cc", h("span", {}, m.cc.map((p) => `${p.Name ? `${p.Name} ` : ""}<${p.Address}> `).join(""))) : null,
+        headerRow("Subject", h("strong", { class: "text-spaces" }, m.subject || "(no subject)"), false),
+        headerRow("Date", h("span", {}, fullDate(m.created), h("small", { class: "ms-2" }, `(${size(m.size)})`)))))),
+      h("div", { class: "col-md-auto d-none d-md-block text-end mt-md-3" },
+        m.attachments.length ? h("span", { class: "badge rounded-pill text-bg-secondary p-2 mb-2", title: "Attachments in this message" }, `Attachment (${m.attachments.length})`) : null)),
+    h("nav", { id: "nav-tab", class: "nav nav-tabs my-3 d-print-none", role: "tablist" }, tabs.map(([id, label]) => tabButton(id, label))),
+    pane);
+  $("#message-page").replaceChildren(body);
+  if (tab === "html") {
+    const frame = h("iframe", { id: "preview", sandbox: "allow-popups allow-popups-to-escape-sandbox", referrerpolicy: "no-referrer" });
+    frame.srcdoc = "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'; img-src https: data:\"><base target=\"_blank\"><style>:root{color-scheme:light}body{background:#fff;color:#000}</style>" + m.html;
+    pane.append(h("div", { class: "tab-pane fade show active" }, frame, attachmentCards(m)));
+  } else if (tab === "text") {
+    pane.append(h("div", { class: "tab-pane fade show active" }, h("div", { class: "text-view" }, m.text || "(empty)"), attachmentCards(m)));
+  } else if (tab === "raw") {
+    const clipped = m.raw.byteLength > RAW_PREVIEW_BYTES;
+    pane.append(h("div", { class: "tab-pane fade show active" },
+      clipped ? h("p", { class: "text-muted small" }, `Showing the first ${size(RAW_PREVIEW_BYTES)} of ${size(m.raw.byteLength)}. Use Download to get the whole message.`) : null,
+      h("pre", { class: "small text-body" }, new TextDecoder().decode(new Uint8Array(m.raw, 0, Math.min(m.raw.byteLength, RAW_PREVIEW_BYTES))))));
+  } else {
+    const rows = m.headers.map(([name, values]) => h("div", { class: "row mb-2 pb-2 border-bottom w-100", "data-h": `${name} ${values.join(" ")}`.toLowerCase() },
+      h("div", { class: "col-md-4 col-lg-3 col-xl-2 mb-2" }, h("b", {}, name)),
+      h("div", { class: "col-md-8 col-lg-9 col-xl-10 text-body-secondary" }, values.map((v) => h("div", { class: "mb-2 text-break" }, v)))));
+    const filter = h("input", { type: "search", class: "form-control mb-3", placeholder: "Filter headers...", "aria-label": "Filter headers", oninput: () => rows.forEach((r) => r.classList.toggle("d-none", !r.dataset.h.includes(filter.value.trim().toLowerCase()))) });
+    pane.append(h("div", { class: "tab-pane fade show active" }, h("div", { class: "row w-100 mb-3" }, h("div", { class: "col col-md-10 col-lg-7" }, filter)), h("div", { class: "small" }, rows)));
+  }
+}
+
+function renderDownloadMenu(m) {
+  const items = [h("li", {}, h("a", { href: "#", class: "dropdown-item", title: "Message source including headers, body and attachments", onclick: (e) => { e.preventDefault(); saveBlob(new Blob([m.raw], { type: "message/rfc822" }), "message.eml"); } }, "Raw message"))];
+  if (m.attachments.length) {
+    items.push(h("li", {}, h("hr", { class: "dropdown-divider" })), h("li", {}, h("h6", { class: "dropdown-header" }, "Attachments")));
+    for (const f of m.attachments) {
+      items.push(h("li", {}, h("a", { href: "#", class: "row m-0 dropdown-item d-flex", style: "min-width:300px", onclick: (e) => { e.preventDefault(); saveBlob(new Blob([f.content], { type: f.contentType }), f.fileName); } },
+        h("div", { class: "col text-truncate p-0 pe-1" }, f.fileName || "attachment"), h("div", { class: "col-auto text-muted small p-0" }, size(f.size)))));
+    }
+  }
+  $("#downloadMenu").replaceChildren(...items);
+}
+
+function saveBlob(blob, fileName) {
+  $("#downloadMenu").classList.remove("show");
+  const a = h("a", { href: URL.createObjectURL(blob), download: fileName || "attachment" });
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+}
+
+const narrow = () => !matchMedia("(min-width: 768px)").matches;
+const addButton = () => $(`${narrow() ? "#offBody" : "#sideList"} [data-act=add]`);
+let modalOpen = false;
+let returnFocus = null;
+let spotFrame = 0;
+let spotKey = "";
+
+function placeSpot() {
+  const button = addButton();
+  if (!button || !button.getClientRects().length) return;
+  const r = button.getBoundingClientRect();
+  const pad = 6;
+  const rad = 10;
+  const w = innerWidth;
+  const h = innerHeight;
+  const x = r.left - pad;
+  const y = r.top - pad;
+  const bw = r.width + pad * 2;
+  const bh = r.height + pad * 2;
+  const key = [x, y, bw, bh, w, h].join();
+  if (key === spotKey) return;
+  spotKey = key;
+  const arc = (dx, dy) => `A${rad} ${rad} 0 0 1 ${dx} ${dy}`;
+  $("#spotDim").style.clipPath = `path(evenodd, "M0 0H${w}V${h}H0Z M${x + rad} ${y}H${x + bw - rad}${arc(x + bw, y + rad)}V${y + bh - rad}${arc(x + bw - rad, y + bh)}H${x + rad}${arc(x, y + bh - rad)}V${y + rad}${arc(x + rad, y)}Z")`;
+  Object.assign($("#spotRing").style, { left: `${x}px`, top: `${y}px`, width: `${bw}px`, height: `${bh}px` });
+  const hint = $("#spotHint");
+  const hw = hint.offsetWidth;
+  const hh = hint.offsetHeight;
+  const gap = 12;
+  let left;
+  let top;
+  let arrow;
+  if (x + bw + gap + hw <= w - 8) { left = x + bw + gap; top = r.top + r.height / 2 - hh / 2; arrow = "left"; }
+  else if (y + bh + gap + hh <= h - 8) { left = r.left + r.width / 2 - hw / 2; top = y + bh + gap; arrow = "up"; }
+  else { left = r.left + r.width / 2 - hw / 2; top = Math.max(8, y - gap - hh); arrow = "down"; }
+  hint.style.left = `${Math.min(Math.max(left, 8), Math.max(8, w - hw - 8))}px`;
+  hint.style.top = `${Math.max(top, 8)}px`;
+  $("#spotArrow").className = `bi bi-arrow-${arrow}-short me-1`;
+}
+
+function spotLoop() {
+  if (narrow() && !$("#offcanvas").classList.contains("show")) openMenu();
+  else if (!narrow() && !$("#backdrop").classList.contains("d-none")) closeMenu();
+  placeSpot();
+  spotFrame = requestAnimationFrame(spotLoop);
+}
+
+function syncSpot() {
+  const wanted = !me && !modalOpen;
+  $("#spot").classList.toggle("d-none", !wanted);
+  cancelAnimationFrame(spotFrame);
+  if (!wanted) return;
+  spotKey = "";
+  spotLoop();
+  setTimeout(() => { if (!me && !modalOpen) addButton()?.focus({ preventScroll: true }); }, 400);
+}
+
+function showNoAddress() {
+  me = null;
+  messages = [];
+  truncated = false;
+  showListLayout();
+  $("#listBar").classList.add("d-none");
+  refreshSidebars();
+  renderList();
+  syncModalChrome();
+  syncSpot();
+}
+
+function syncModalChrome() { $("#addClose").classList.toggle("d-none", !me); }
+
+function openModal() {
+  if (modalOpen) return;
+  returnFocus = document.activeElement;
+  modalOpen = true;
+  closeMenu();
+  $("#addModal").classList.add("d-block");
+  $("#addModal").setAttribute("aria-hidden", "false");
+  $("#addBackdrop").classList.remove("d-none");
+  $("#app").inert = true;
+  $("#user").value = "";
+  $("#authErr").classList.add("d-none");
+  syncModalChrome();
+  syncSpot();
+  $("#user").focus();
+}
+
+function closeModal() {
+  if (modalOpen) {
+    modalOpen = false;
+    $("#addModal").classList.remove("d-block");
+    $("#addModal").setAttribute("aria-hidden", "true");
+    $("#addBackdrop").classList.add("d-none");
+    $("#app").inert = false;
+    (returnFocus?.isConnected ? returnFocus : addButton())?.focus({ preventScroll: true });
+  }
+  syncSpot();
+}
+
+function trapFocus(e) {
+  const items = $$("button, input, a[href]", $("#addModal")).filter((el) => !el.disabled && el.getClientRects().length);
+  if (!items.length) return;
+  const first = items[0];
+  const last = items.at(-1);
+  const active = document.activeElement;
+  if (!$("#addModal").contains(active)) { e.preventDefault(); first.focus(); }
+  else if (e.shiftKey && active === first) { e.preventDefault(); last.focus(); }
+  else if (!e.shiftKey && active === last) { e.preventDefault(); first.focus(); }
+}
+
+function openMenu() { $("#offcanvas").classList.add("show"); $("#backdrop").classList.remove("d-none"); $("#backdrop").classList.add("show"); }
+function closeMenu() { $("#offcanvas").classList.remove("show"); $("#backdrop").classList.add("d-none"); $("#backdrop").classList.remove("show"); }
+
+function showListLayout() {
+  current = null;
+  $("#listBar").classList.remove("d-none");
+  $("#navList").classList.remove("d-none"); $("#navView").classList.add("d-none");
+  setClass($("#sideList"), "d-none d-md-flex h-100 col-xl-2 col-md-3 flex-column");
+  setClass($("#sideView"), "d-none");
+  setClass($("#main"), "d-flex flex-column col-xl-10 col-md-9 mh-100 ps-0 ps-md-2 pe-0");
+}
+
+async function route() {
+  if (!me) return;
+  closeMenu();
+  const id = /^#\/view\/([\w-]+)$/.exec(location.hash)?.[1];
+  if (!id) {
+    view = parseHash(location.hash, storedSort());
+    $("#search").value = view.q;
+    showListLayout();
+    renderList();
+    return;
+  }
+  const res = await api(`/api/messages/${encodeURIComponent(id)}/raw`);
+  if (!res.ok) { location.hash = "#/"; return; }
+  const listed = messages.find((m) => m.id === id);
+  try {
+    current = await parseMessage(id, listed, await res.arrayBuffer());
+  } catch {
+    location.hash = "#/";
+    return;
+  }
+  if (listed) listed.read = true;
+  $("#listBar").classList.add("d-none");
+  $("#navList").classList.add("d-none"); $("#navView").classList.remove("d-none");
+  $("#backLink").setAttribute("href", formatHash(view));
+  $("#returnLink").setAttribute("href", formatHash(view));
+  setClass($("#sideList"), "d-none");
+  setClass($("#sideView"), "d-none d-xl-flex h-100 col-xl-3 flex-column");
+  setClass($("#main"), "d-flex flex-column col-xl-9 mh-100 ps-0 ps-md-2 pe-0");
+  tab = current.html ? "html" : "text";
+  renderDownloadMenu(current);
+  renderMessage();
+  await refresh();
+}
+
+const REFRESH_COOLDOWN_SECONDS = 5;
+let cooldownTimer = null;
+
+function isGatewayFailure(res) {
+  const gateway = [502, 503, 504].includes(res.status) || (res.status >= 520 && res.status <= 530);
+  return gateway && !(res.headers.get("content-type") ?? "").includes("application/json");
+}
+
+function renderBanner() {
+  const key = connectionLost ? "lost" : serviceStatus.d1 !== "ok" ? "store" : null;
+  const banner = $("#statusBanner");
+  banner.classList.toggle("d-none", key === null);
+  if (key === null) return;
+  const [level, text] = BANNERS[key];
+  banner.className = `alert alert-${level} rounded-0 border-0 mb-0 text-center py-2 small flex-shrink-0`;
+  banner.textContent = text;
+}
+
+async function pollStatus() {
+  try {
+    const res = await fetch("/api/status", { cache: "no-store" });
+    if (isGatewayFailure(res)) connectionLost = true;
+    else if (res.ok) { serviceStatus = await res.json(); connectionLost = false; }
+  } catch {
+    connectionLost = true;
+  }
+  renderBanner();
+}
+
+let tickCount = 0;
+
+async function tick() {
+  if (ticking || document.hidden) return;
+  ticking = true;
+  try {
+    if (tickCount % STATUS_EVERY === 0) await pollStatus();
+    tickCount += 1;
+    if (me) await refresh();
+  } finally {
+    ticking = false;
+  }
+}
+
+function startPolling() {
+  clearInterval(timer);
+  timer = setInterval(tick, POLL_SECONDS * 1000);
+}
+
+document.addEventListener("visibilitychange", () => { if (!document.hidden && me) tick(); });
+
+async function manualRefresh() {
+  const button = $("#refreshBtn");
+  if (button.disabled) return;
+  button.disabled = true;
+  let left = REFRESH_COOLDOWN_SECONDS;
+  $("#refreshLabel").textContent = `Refresh ${left}`;
+  clearInterval(cooldownTimer);
+  cooldownTimer = setInterval(() => {
+    left -= 1;
+    if (left > 0) { $("#refreshLabel").textContent = `Refresh ${left}`; return; }
+    clearInterval(cooldownTimer);
+    $("#refreshLabel").textContent = "Refresh";
+    button.disabled = false;
+  }, 1000);
+  startPolling();
+  await refresh();
+}
+
+async function enter(account, keepHash = false) {
+  me = account;
+  current = null;
+  messages = [];
+  truncated = false;
+  chipKey = "";
+  if (!(keepHash && location.hash.startsWith("#/?"))) location.hash = "#/";
+  closeModal();
+  await refresh();
+  await route();
+  startPolling();
+}
+
+document.addEventListener("click", async (e) => {
+  const target = e.target.closest("[data-act]");
+  if (!e.target.closest(".dropdown")) $("#downloadMenu").classList.remove("show");
+  if (!target) return;
+  const act = target.dataset.act;
+  if (act === "refresh") manualRefresh();
+  else if (act === "openMenu") openMenu();
+  else if (act === "closeMenu") closeMenu();
+  else if (act === "download-menu") $("#downloadMenu").classList.toggle("show");
+  else if (act === "copy") {
+    try { await navigator.clipboard.writeText(me.address); } catch {}
+    $$("[data-copy-label]").forEach((el) => { el.textContent = "Copied"; setTimeout(() => { el.textContent = "Copy address"; }, 1500); });
+    $$("[data-copy-icon]").forEach((el) => { el.className = "bi bi-check-lg me-1"; setTimeout(() => { el.className = "bi bi-clipboard me-1"; }, 1500); });
+  } else if (act === "switch") {
+    e.preventDefault();
+    if (target.dataset.name === me.active) { location.hash = "#/"; closeMenu(); return; }
+    postJson("/api/switch", { username: target.dataset.name }).then(({ ok, body }) => { if (ok) enter(body); });
+  } else if (act === "forget") {
+    const name = target.dataset.name;
+    if (!confirm(`Remove ${name}@booth.pp.ua from this browser? Its mail stays on the server.`)) return;
+    const { ok, body } = await postJson("/api/forget", { username: name });
+    if (!ok) return;
+    if (body.active) enter(body);
+    else showNoAddress();
+  } else if (act === "clearFilters") {
+    view = clearFilters(view);
+    commitView();
+  } else if (act === "add") {
+    openModal();
+  } else if (act === "closeModal") {
+    if (me) closeModal();
+  } else if (act === "random") {
+    randomUsername();
+  } else if (act === "theme") {
+    window.setThemePref(NEXT_THEME[window.themePref()]);
+    refreshSidebars();
+  } else if (act === "delete" && current && confirm("Delete this message?")) {
+    await api(`/api/messages/${encodeURIComponent(current.id)}`, { method: "DELETE" });
+    location.hash = formatHash(view);
+    await refresh();
+  }
+});
+
+const RANDOM_COOLDOWN_SECONDS = 2;
+let randomTimer = null;
+
+async function randomUsername() {
+  const button = $("#randomBtn");
+  if (button.disabled) return;
+  button.disabled = true;
+  let left = RANDOM_COOLDOWN_SECONDS;
+  const count = $("#randomCount");
+  const showCount = (value) => { count.textContent = value; count.classList.remove("d-none"); $("#randomIcon").classList.add("d-none"); };
+  showCount(left);
+  clearInterval(randomTimer);
+  randomTimer = setInterval(() => {
+    left -= 1;
+    if (left > 0) { showCount(left); return; }
+    clearInterval(randomTimer);
+    count.classList.add("d-none");
+    $("#randomIcon").classList.remove("d-none");
+    button.disabled = false;
+  }, 1000);
+  $("#authErr").classList.add("d-none");
+  const res = await fetch("/api/random");
+  const body = await res.json();
+  if (res.ok) { $("#user").value = body.username; $("#user").focus(); return; }
+  $("#authErr").textContent = body.error;
+  $("#authErr").classList.remove("d-none");
+}
+
+async function postJson(path, payload) {
+  const res = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+  return { ok: res.ok, body: await res.json() };
+}
+
+$("#form").onsubmit = async (e) => {
+  e.preventDefault();
+  $("#authErr").classList.add("d-none");
+  const { ok, body } = await postJson("/api/open", { username: $("#user").value.trim().replace(/@booth\.pp\.ua$/i, "") });
+  if (!ok) { $("#authErr").textContent = body.error; $("#authErr").classList.remove("d-none"); return; }
+  enter(body);
+};
+$("#searchForm").onsubmit = (e) => e.preventDefault();
+$("#search").oninput = () => { if (me && !current) changeView({ q: $("#search").value.slice(0, 200) }); };
+window.addEventListener("hashchange", route);
+$("#addModal").addEventListener("mousedown", (e) => { if (e.target === e.currentTarget && me) closeModal(); });
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Tab" && modalOpen) trapFocus(e);
+  if (e.key !== "Escape") return;
+  $("#downloadMenu").classList.remove("show");
+  if (modalOpen) { if (me) closeModal(); } else if (me) closeMenu();
+});
+
+startPolling();
+pollStatus();
+(async () => {
+  const res = await fetch("/api/me");
+  if (res.ok) enter(await res.json(), true);
+  else showNoAddress();
+})();
+</script>
+</body>
+</html>

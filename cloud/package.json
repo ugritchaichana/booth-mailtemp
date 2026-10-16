@@ -1,0 +1,15 @@
+{
+  "name": "mailtemp-cloud",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22.13" },
+  "scripts": {
+    "test": "node --test \"test/*.test.mjs\"",
+    "test:integration": "node test/integration.mjs",
+    "dev": "wrangler dev --local"
+  },
+  "devDependencies": {
+    "wrangler": "4.148.0"
+  }
+}
