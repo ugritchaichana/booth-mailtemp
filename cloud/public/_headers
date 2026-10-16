@@ -1,0 +1,7 @@
+/*
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: no-referrer
+/
+  Content-Security-Policy: frame-ancestors 'none'
+/index.html
+  Content-Security-Policy: frame-ancestors 'none'

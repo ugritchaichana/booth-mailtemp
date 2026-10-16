@@ -27,6 +27,7 @@ jobs:
           cache: npm
           cache-dependency-path: |
             worker/package-lock.json
+            cloud/package-lock.json
             e2e-helper/package-lock.json
 
       - name: Generate local secrets
@@ -37,7 +38,7 @@ jobs:
 
       - name: Syntax check
         run: |
-          find bridge inbox janitor status-worker worker tools \
+          find bridge inbox janitor status-worker worker cloud tools \
             \( -name node_modules -o -name .wrangler -o -name dist \) -prune -o \
             \( -name '*.js' -o -name '*.mjs' \) -print0 |
             xargs -0 -n1 node --check
@@ -51,11 +52,21 @@ jobs:
       - name: Inbox unit tests
         run: node --test "inbox/test/*.test.mjs"
 
+      - name: Cloud unit tests
+        run: node --test "cloud/test/*.test.mjs"
+
       - name: Worker bundle (dry run, no Cloudflare credentials)
         working-directory: worker
         run: |
           npm ci
           npx wrangler deploy --dry-run --outdir dist
+
+      - name: Cloud worker bundle (dry run) and local integration
+        working-directory: cloud
+        run: |
+          npm ci
+          npx wrangler deploy --dry-run --outdir dist
+          node test/integration.mjs
 
   test:
     name: test

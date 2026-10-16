@@ -1,0 +1,26 @@
+name = "mailtemp-cloud"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+workers_dev = false
+send_metrics = false
+
+[triggers]
+crons = ["*/10 * * * *"]
+
+[vars]
+MAIL_DOMAIN = "booth.pp.ua"
+STORED_BYTES_CAP = "400000000"
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
+run_worker_first = ["/api/*"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "mailtemp-cloud"
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "migrations"
+
+[observability]
+enabled = true
