@@ -40,6 +40,11 @@
 @keyframes spotPulse{50%{box-shadow:0 0 0 3px #fff,0 0 26px 8px rgba(255,255,255,.3)}}
 @media (prefers-reduced-motion:reduce){#spotRing{animation:none}}
 #addModal .modal-dialog{max-width:440px}
+#reportModal .modal-dialog{max-width:640px}
+#reportBackdrop{z-index:1069}
+#reportModal{z-index:1070}
+.report-drop{border:2px dashed var(--bs-border-color);cursor:pointer}
+.report-drop.over{border-color:var(--bs-primary);background:var(--bs-secondary-bg)}
 .list-head{position:sticky;top:0;z-index:2}
 .sort-btn{color:inherit;text-decoration:none;font-weight:600}
 .sort-btn:hover{text-decoration:underline}
@@ -67,6 +72,7 @@
       <div class="col-12 col-md-auto col-lg-4 col-xl-4 text-end mt-2 mt-md-0">
         <div class="float-start d-md-none"><button class="btn btn-outline-light me-2" type="button" data-act="openMenu" aria-label="Toggle sidebar"><i class="bi bi-list"></i></button></div>
         <small id="countText"></small>
+        <button type="button" class="btn btn-sm btn-outline-light ms-2 d-none" data-report="open" title="Report a problem"><i class="bi bi-flag me-1"></i><span class="d-none d-sm-inline">Report a problem</span></button>
       </div>
     </div>
 
@@ -81,6 +87,7 @@
           <button type="button" class="btn btn-outline-light dropdown-toggle" data-act="download-menu" aria-label="Download"><i class="bi bi-file-arrow-down-fill"></i><span class="d-none d-md-inline ms-1">Download</span></button>
           <ul id="downloadMenu" class="dropdown-menu dropdown-menu-end" data-bs-popper="static"></ul>
         </div>
+        <button type="button" class="btn btn-sm btn-outline-light me-2 d-none" data-report="open" title="Report a problem"><i class="bi bi-flag me-1"></i><span class="d-none d-sm-inline">Report a problem</span></button>
         <a id="prevMsg" class="btn btn-outline-light ms-1 ms-sm-2 me-1" title="View previous message"><i class="bi bi-caret-left-fill"></i></a>
         <a id="nextMsg" class="btn btn-outline-light" title="View next message"><i class="bi bi-caret-right-fill"></i></a>
       </div>
@@ -119,6 +126,72 @@
   <div id="spotHint" role="status"><i id="spotArrow" class="bi bi-arrow-left-short me-1"></i>Add an address to open your inbox</div>
 </div>
 
+<div id="reportBackdrop" class="modal-backdrop show d-none"></div>
+<div id="reportModal" class="modal" tabindex="-1" role="dialog" aria-modal="true" aria-labelledby="reportHeading" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable">
+    <div class="modal-content">
+      <form id="reportForm" novalidate>
+        <div class="modal-header">
+          <h5 id="reportHeading" class="modal-title">Report a problem</h5>
+          <button type="button" class="btn-close" data-report="close" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <div class="row g-2 mb-3">
+            <div class="col-sm-4">
+              <label class="form-label small" for="rCategory">Category</label>
+              <select id="rCategory" class="form-select">
+                <option value="bug">Bug</option>
+                <option value="problem">Problem</option>
+                <option value="suggestion">Suggestion</option>
+                <option value="other">Other</option>
+              </select>
+            </div>
+            <div class="col-sm-8">
+              <label class="form-label small" for="rTitle">Title</label>
+              <input id="rTitle" class="form-control" maxlength="120" autocomplete="off" required>
+            </div>
+          </div>
+          <div class="mb-3">
+            <label class="form-label small" for="rDetails">Details</label>
+            <textarea id="rDetails" class="form-control" rows="6" maxlength="10000" required></textarea>
+            <div class="form-text text-end"><span id="rDetailsCount">0</span> / 10000</div>
+          </div>
+          <div class="row g-2 mb-3">
+            <div class="col-sm-6">
+              <label class="form-label small" for="rFrom">When it happened: from <span class="text-muted">(optional)</span></label>
+              <input id="rFrom" type="datetime-local" class="form-control">
+            </div>
+            <div class="col-sm-6">
+              <label class="form-label small" for="rTo">to <span class="text-muted">(optional)</span></label>
+              <input id="rTo" type="datetime-local" class="form-control">
+            </div>
+            <div class="form-text mt-1">Times are in your local time zone.</div>
+          </div>
+          <div class="mb-3">
+            <div class="form-label small">Images <span id="rImageCount" class="text-muted">0 / 20</span></div>
+            <div id="rDrop" class="report-drop rounded p-3 text-center small text-muted" tabindex="0" role="button" aria-label="Add images"><i class="bi bi-images me-1"></i>Drop images here, paste with Ctrl+V, or <button id="rPick" type="button" class="btn btn-link btn-sm p-0 align-baseline">choose files</button></div>
+            <input id="rFile" type="file" class="d-none" accept="image/png,image/jpeg,image/webp,image/gif" multiple>
+            <div id="rImageNote" class="small text-danger mt-1 d-none" role="status"></div>
+            <div id="rPreviews" class="row g-2 mt-1"></div>
+          </div>
+          <div id="reportTs" class="d-flex justify-content-center"></div>
+          <div id="reportErr" class="alert alert-danger py-2 small mb-0 d-none" role="alert"></div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary" data-report="close">Cancel</button>
+          <button id="rSubmit" type="submit" class="btn btn-primary"><span id="rSpin" class="spinner-border spinner-border-sm me-2 d-none" aria-hidden="true"></span>Send report</button>
+        </div>
+      </form>
+      <div id="reportDone" class="modal-body text-center py-4 d-none" role="status">
+        <i class="bi bi-check-circle-fill text-success fs-1"></i>
+        <h5 class="mt-2">Report #<span id="rNumber"></span> received</h5>
+        <p class="text-muted small mb-3">Thank you. It has been passed to the maintainers.</p>
+        <button id="rDoneClose" type="button" class="btn btn-primary" data-report="close">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div id="addBackdrop" class="modal-backdrop show d-none"></div>
 <div id="addModal" class="modal" tabindex="-1" role="dialog" aria-modal="true" aria-labelledby="addTitle" aria-hidden="true">
   <div class="modal-dialog modal-dialog-centered">
@@ -138,7 +211,9 @@
             <span class="input-group-text">@booth.pp.ua</span>
           </div>
           <div id="authErr" class="alert alert-danger py-2 small d-none" role="alert"></div>
+          <div id="addTs" class="d-flex justify-content-center"></div>
           <button id="go" type="submit" class="btn btn-primary w-100">Open inbox</button>
+          <div class="text-center mt-2"><button type="button" class="btn btn-link btn-sm p-0 d-none" data-report="open">Having trouble? Report a problem</button></div>
           <p id="addNote" class="small text-muted text-center mt-3 mb-0">Names are shared: anyone who opens a name sees its mail. A new name creates a new inbox. Use <code>name+tag</code>, such as <code>test+1</code>, for a separate inbox.</p>
         </div>
       </form>
@@ -170,6 +245,8 @@
 <script type="module">
 import { DEFAULT_SORT, clearFilters, filterMessages, formatHash, formatSort, hasFilters, nextSort, orderAccounts, parseHash, parseSort, people, person, senderOptions, sortMessages } from "/listview.js";
 import PostalMime from "/vendor/postal-mime.js";
+import { BOT_CHECK_ERROR, loadConfig, tokenFor } from "/turnstile.js";
+import { initReport } from "/report.js";
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 const h = (tag, attrs = {}, ...kids) => {
@@ -603,11 +680,14 @@ function placeSpot() {
   const y = r.top - pad;
   const bw = r.width + pad * 2;
   const bh = r.height + pad * 2;
-  const key = [x, y, bw, bh, w, h].join();
+  const report = $("#navList [data-report=open]");
+  const rr = report?.getClientRects().length ? report.getBoundingClientRect() : null;
+  const key = [x, y, bw, bh, w, h, rr?.left, rr?.top, rr?.width, rr?.height].join();
   if (key === spotKey) return;
   spotKey = key;
   const arc = (dx, dy) => `A${rad} ${rad} 0 0 1 ${dx} ${dy}`;
-  $("#spotDim").style.clipPath = `path(evenodd, "M0 0H${w}V${h}H0Z M${x + rad} ${y}H${x + bw - rad}${arc(x + bw, y + rad)}V${y + bh - rad}${arc(x + bw - rad, y + bh)}H${x + rad}${arc(x, y + bh - rad)}V${y + rad}${arc(x + rad, y)}Z")`;
+  const hole = (hx, hy, hw, hh) => `M${hx + rad} ${hy}H${hx + hw - rad}${arc(hx + hw, hy + rad)}V${hy + hh - rad}${arc(hx + hw - rad, hy + hh)}H${hx + rad}${arc(hx, hy + hh - rad)}V${hy + rad}${arc(hx + rad, hy)}Z`;
+  $("#spotDim").style.clipPath = `path(evenodd, "M0 0H${w}V${h}H0Z ${hole(x, y, bw, bh)}${rr ? ` ${hole(rr.left - 4, rr.top - 4, rr.width + 8, rr.height + 8)}` : ""}")`;
   Object.assign($("#spotRing").style, { left: `${x}px`, top: `${y}px`, width: `${bw}px`, height: `${bh}px` });
   const hint = $("#spotHint");
   const hw = hint.offsetWidth;
@@ -887,24 +967,35 @@ async function randomUsername() {
     button.disabled = false;
   }, 1000);
   $("#authErr").classList.add("d-none");
-  const res = await fetch("/api/random");
+  const failWith = (message) => { $("#authErr").textContent = message; $("#authErr").classList.remove("d-none"); };
+  let token;
+  try { token = await tokenFor($("#addTs"), "random"); } catch { failWith(BOT_CHECK_ERROR); return; }
+  const res = await fetch("/api/random", { headers: token ? { "X-Turnstile-Token": token } : {} });
   const body = await res.json();
   if (res.ok) { $("#user").value = body.username; $("#user").focus(); return; }
-  $("#authErr").textContent = body.error;
-  $("#authErr").classList.remove("d-none");
+  failWith(body.error);
 }
 
-async function postJson(path, payload) {
-  const res = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+async function postJson(path, payload, token = null) {
+  const res = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json", ...(token ? { "X-Turnstile-Token": token } : {}) }, body: JSON.stringify(payload) });
   return { ok: res.ok, body: await res.json() };
 }
 
 $("#form").onsubmit = async (e) => {
   e.preventDefault();
+  if ($("#go").disabled) return;
   $("#authErr").classList.add("d-none");
-  const { ok, body } = await postJson("/api/open", { username: $("#user").value.trim().replace(/@booth\.pp\.ua$/i, "") });
-  if (!ok) { $("#authErr").textContent = body.error; $("#authErr").classList.remove("d-none"); return; }
-  enter(body);
+  const failWith = (message) => { $("#authErr").textContent = message; $("#authErr").classList.remove("d-none"); };
+  $("#go").disabled = true;
+  try {
+    let token;
+    try { token = await tokenFor($("#addTs"), "open"); } catch { failWith(BOT_CHECK_ERROR); return; }
+    const { ok, body } = await postJson("/api/open", { username: $("#user").value.trim().replace(/@booth\.pp\.ua$/i, "") }, token);
+    if (!ok) { failWith(body.error); return; }
+    enter(body);
+  } finally {
+    $("#go").disabled = false;
+  }
 };
 $("#searchForm").onsubmit = (e) => e.preventDefault();
 $("#search").oninput = () => { if (me && !current) changeView({ q: $("#search").value.slice(0, 200) }); };
@@ -919,6 +1010,7 @@ document.addEventListener("keydown", (e) => {
 
 startPolling();
 pollStatus();
+loadConfig().then((config) => { if (config.reports) initReport({ tokenFor, botCheckError: BOT_CHECK_ERROR }); }).catch(() => {});
 (async () => {
   const res = await fetch("/api/me");
   if (res.ok) enter(await res.json(), true);

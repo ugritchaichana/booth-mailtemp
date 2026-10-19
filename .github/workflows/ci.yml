@@ -57,6 +57,7 @@ jobs:
           npm ci
           npx wrangler deploy --dry-run --outdir dist
           node test/integration.mjs
+          node test/report-integration.mjs
 
   browser:
     name: browser
@@ -80,3 +81,7 @@ jobs:
       - name: Cloud admin browser check
         working-directory: cloud
         run: node test/admin-browser.mjs
+
+      - name: Cloud report browser check
+        working-directory: cloud
+        run: node test/report-browser.mjs

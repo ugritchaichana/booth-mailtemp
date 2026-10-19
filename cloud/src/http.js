@@ -4,3 +4,5 @@ export const json = (status, body, extra = {}) => new Response(JSON.stringify(bo
 });
 
 export const fail = (status, error) => json(status, { error });
+
+export const log = (event, fields = {}) => console.log(JSON.stringify({ at: new Date().toISOString(), event, ...fields }));
