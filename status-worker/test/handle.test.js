@@ -11,10 +11,10 @@ for (const path of ["/", "/index.html", "/some/deep/path", "/admin/", "/?x=1"]) 
     assert.equal(response.status, 200);
     assert.match(response.headers.get("Content-Type"), /^text\/html/);
     assert.equal(response.headers.get("Cache-Control"), "no-store");
-    assert.ok(html.includes("ระบบย้ายไปที่ mail.booth.pp.ua แล้ว"));
-    assert.ok(html.includes('<meta http-equiv="refresh" content="5;url=https://mail.booth.pp.ua/">'));
-    assert.match(html, /location\.replace\("https:\/\/mail\.booth\.pp\.ua\/"\)\},5000\)/);
-    assert.ok(html.includes(`<a class="go" href="${TARGET_URL}">ไปเลย</a>`));
+    assert.ok(html.includes("Moved to mail.booth.pp.ua"));
+    assert.ok(html.includes('<meta http-equiv="refresh" content="10;url=https://mail.booth.pp.ua/">'));
+    assert.match(html, /location\.replace\("https:\/\/mail\.booth\.pp\.ua\/"\)\},10000\)/);
+    assert.ok(html.includes(`<a class="go" href="${TARGET_URL}">Go now</a>`));
     assert.match(html, /<meta name="robots" content="noindex">/);
   });
 }
@@ -48,9 +48,9 @@ test("the page makes no external request and links only to the new inbox", async
   assert.doesNotMatch(html, /@import|url\(/i);
 });
 
-test("the progress bar fills over 5 seconds and is static under reduced motion", async () => {
+test("the progress bar fills over 10 seconds and is static under reduced motion", async () => {
   const html = await (await call("/")).text();
-  assert.match(html, /animation:fill 5s linear forwards/);
+  assert.match(html, /animation:fill 10s linear forwards/);
   assert.match(html, /@media \(prefers-reduced-motion:reduce\)\{\.bar i\{animation:none;width:100%\}\}/);
 });
 
@@ -77,4 +77,12 @@ test("wrangler.toml has the single wildcard route on the old host", async () => 
   const toml = await readFile(new URL("../wrangler.toml", import.meta.url), "utf8");
   assert.deepEqual([...toml.matchAll(/pattern = "([^"]+)"/g)].map((m) => m[1]), ["mailpit.booth.pp.ua/*"]);
   assert.match(toml, /zone_name = "booth\.pp\.ua"/);
+});
+
+test("the page is English only", async () => {
+  const html = await (await call("/")).text();
+  assert.doesNotMatch(html, /[฀-๿]/);
+  assert.match(html, /<html lang="en">/);
+  assert.match(html, /<title>Moved to mail\.booth\.pp\.ua<\/title>/);
+  assert.ok(html.includes("Email addresses are unchanged. Redirecting in 10 seconds."));
 });
