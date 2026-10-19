@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { launchBrowser } from "../../inbox/test/browser.mjs";
+import { launchBrowser } from "./browser.mjs";
 import { buildMessage } from "./probe/worker.js";
 import { SSO_USERS, probeIngest, startSsoDev } from "./dev-server.mjs";
 

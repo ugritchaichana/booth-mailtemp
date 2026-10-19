@@ -3,7 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=22.13" },
+  "engines": {
+    "node": ">=22.13"
+  },
   "scripts": {
     "test": "node --test \"test/*.test.mjs\"",
     "test:integration": "node test/integration.mjs",
@@ -11,6 +13,7 @@
     "dev": "wrangler dev --local"
   },
   "devDependencies": {
+    "playwright": "1.64.0",
     "wrangler": "4.148.0"
   }
 }
