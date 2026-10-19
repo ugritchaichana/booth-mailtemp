@@ -4,12 +4,20 @@ compatibility_date = "2026-10-01"
 workers_dev = false
 send_metrics = false
 
+[[routes]]
+pattern = "mail.booth.pp.ua"
+custom_domain = true
+
 [triggers]
 crons = ["*/10 * * * *"]
 
 [vars]
 MAIL_DOMAIN = "booth.pp.ua"
 STORED_BYTES_CAP = "400000000"
+OWNER_GITHUB_IDS = "79318070,247393965"
+GITHUB_CLIENT_ID = "Ov23liXeEeOSO2fJ5Z5D"
+ISSUES_REPO = "ugritchaichana/booth-mailtemp-reports"
+TURNSTILE_SITE_KEY = "REPLACE_WITH_SITE_KEY"
 
 [assets]
 directory = "./public"
@@ -19,7 +27,7 @@ run_worker_first = ["/api/*"]
 [[d1_databases]]
 binding = "DB"
 database_name = "mailtemp-cloud"
-database_id = "00000000-0000-0000-0000-000000000000"
+database_id = "39a8e5bb-a30b-4dc5-9db6-a97e9a23c380"
 migrations_dir = "migrations"
 
 [observability]
