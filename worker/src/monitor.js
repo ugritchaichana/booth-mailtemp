@@ -1,11 +1,15 @@
-const DEFAULT_STATUS_URL = "https://mailpit.booth.pp.ua/api/status";
-const STATUS_PAGE_URL = "https://mailpit.booth.pp.ua/";
+import { KV_TTL_SECONDS } from "./constants.js";
+
+const DEFAULT_STATUS_URL = "https://mail.booth.pp.ua/api/status";
+const STATUS_PAGE_URL = "https://mail.booth.pp.ua/";
 const STATE_KEY = "state";
 const PROBE_TIMEOUT_MS = 8000;
 const POST_TIMEOUT_MS = 8000;
 const DOWN_AFTER_FAILURES = 2;
 const REMINDER_INTERVAL_MS = 2 * 60 * 60 * 1000;
 const KEY_COUNT_LIMIT = 1000;
+const STALE_AFTER_MS = 10 * 60 * 1000;
+const STATUS_WORD = /^[a-z][a-z-]*$/;
 
 const log = (event, fields = {}) => console.log(JSON.stringify({ event, ...fields }));
 const short = (value) => String(value).slice(0, 60);
@@ -29,21 +33,32 @@ export async function probe(statusUrl, fetchFn) {
     } catch {
       return { ok: false, detail: "HTTP 200 with a non-JSON body" };
     }
-    const bad = ["mailpit", "bridge"].filter((name) => body?.[name] !== "ok");
+    if (!body || typeof body !== "object" || Array.isArray(body)) return { ok: false, detail: "HTTP 200 with an unexpected JSON shape" };
+    const fields = Object.entries(body).filter(([, value]) => typeof value === "string" && STATUS_WORD.test(value));
+    if (fields.length === 0) return { ok: false, detail: "no status field in the response" };
+    const bad = fields.filter(([, value]) => value !== "ok");
     if (bad.length === 0) return { ok: true, detail: "ok" };
-    return { ok: false, detail: bad.map((name) => `${name}=${short(body?.[name])}`).join(", ") };
+    return { ok: false, detail: bad.map(([name, value]) => `${name}=${short(value)}`).join(", ") };
   } catch (err) {
     return { ok: false, detail: `probe error: ${short(err?.name ?? err)}` };
   }
 }
 
-async function countBufferedMail(env) {
+async function scanBuffer(env, now) {
   try {
     const { keys, list_complete } = await env.CAPTURE_FALLBACK.list({ limit: KEY_COUNT_LIMIT });
-    return list_complete ? String(keys.length) : `${keys.length}+`;
+    const ages = keys.filter((key) => typeof key.expiration === "number").map((key) => now - (key.expiration - KV_TTL_SECONDS) * 1000);
+    return { count: list_complete ? String(keys.length) : `${keys.length}+`, oldestAgeMs: ages.length ? Math.max(...ages) : null };
   } catch {
-    return "unknown";
+    return { count: "unknown", oldestAgeMs: null };
   }
+}
+
+async function checkHealth(env, fetchFn, now) {
+  const [result, buffer] = await Promise.all([probe(env.STATUS_URL || DEFAULT_STATUS_URL, fetchFn), scanBuffer(env, now)]);
+  if (buffer.oldestAgeMs === null || buffer.oldestAgeMs <= STALE_AFTER_MS) return { ...result, buffered: buffer.count };
+  const stale = `mail is not reaching the cloud: ${buffer.count} waiting in KV, oldest ${formatDuration(buffer.oldestAgeMs)}`;
+  return { ok: false, detail: result.ok ? stale : `${result.detail}; ${stale}`, buffered: buffer.count };
 }
 
 async function post(env, kind, content, fetchFn) {
@@ -94,13 +109,12 @@ export async function runMonitor(env, { fetch: fetchFn = fetch, now = Date.now()
 
   const state = await loadState(env);
   if (!state) return;
-  const result = await probe(env.STATUS_URL || DEFAULT_STATUS_URL, fetchFn);
+  const result = await checkHealth(env, fetchFn, now);
   const next = { ...state };
 
   if (result.ok) {
     if (state.down) {
-      const buffered = await countBufferedMail(env);
-      const content = `🟢 **mailtemp RECOVERED** after ${formatDuration(now - state.firstFailureAt)} down. Mails buffered in KV: ${buffered}. Status: ${STATUS_PAGE_URL}`;
+      const content = `🟢 **mailtemp RECOVERED** after ${formatDuration(now - state.firstFailureAt)} down. Mails buffered in KV: ${result.buffered}. Status: ${STATUS_PAGE_URL}`;
       if (!(await post(env, "recovered", content, fetchFn))) return;
     }
     if (state.failures > 0 || state.down) await saveState(env, { failures: 0 });

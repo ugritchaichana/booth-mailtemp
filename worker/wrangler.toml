@@ -8,9 +8,8 @@ send_metrics = false
 crons = ["*/5 * * * *"]
 
 [vars]
-BRIDGE_URL = "https://bridge.booth.pp.ua/ingest"
 LAST_RESORT = "rethrow"
-STATUS_URL = "https://mailpit.booth.pp.ua/api/status"
+STATUS_URL = "https://mail.booth.pp.ua/api/status"
 
 [[kv_namespaces]]
 binding = "CAPTURE_FALLBACK"
