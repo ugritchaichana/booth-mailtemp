@@ -84,3 +84,78 @@ test("the id is stable across copies that differ only in trace headers, and diff
   assert.notEqual(one.id, other.id);
   assert.match(one.id, /^[0-9a-f]{32}$/);
 });
+
+const mime = (headers, body) => bytes(`From: a@example.com\r\n${headers.join("\r\n")}\r\n\r\n${body}`);
+const snippet = async (raw) => (await summarize(raw)).snippet;
+
+test("snippet: multipart/alternative quoted-printable text with soft breaks and a UTF-8 byte sequence", async () => {
+  const raw = mime(["Content-Type: multipart/alternative; boundary=\"alt\""],
+    "preamble\r\n--alt\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\ncaf=C3=A9 au la=\r\nit =3D ok\r\n--alt\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<p>html version</p>\r\n--alt--\r\n");
+  assert.equal(await snippet(raw), "café au lait = ok");
+});
+
+test("snippet: an HTML-only base64 body is stripped of head, style, script, tags and entities", async () => {
+  const html = "<html><head><title>t</title><style>p{color:red}</style></head><body><!-- note --><script>alert(1)</script><p>Hello&nbsp;<b>wor</b>ld &amp; &#3585;&#x0E02;</p><div>line two</div></body></html>";
+  const raw = mime(["Content-Type: text/html; charset=utf-8", "Content-Transfer-Encoding: base64"], b64(html));
+  assert.equal(await snippet(raw), "Hello world & กข line two");
+});
+
+test("snippet: Thai UTF-8 text in plain 8bit and base64 parts", async () => {
+  assert.equal(await snippet(mime(["Content-Type: text/plain; charset=utf-8", "Content-Transfer-Encoding: 8bit"], "สวัสดีครับ ทดสอบระบบอีเมล")), "สวัสดีครับ ทดสอบระบบอีเมล");
+  assert.equal(await snippet(mime(["Content-Type: text/plain; charset=utf-8", "Content-Transfer-Encoding: base64"], b64("ยืนยันอีเมลของคุณ"))), "ยืนยันอีเมลของคุณ");
+});
+
+test("snippet: a TIS-620 body decodes when the runtime knows the charset", async () => {
+  assert.equal(await snippet(mime(["Content-Type: text/plain; charset=tis-620", "Content-Transfer-Encoding: quoted-printable"], "=B7=B4=CA=CD=BA")), "ทดสอบ");
+});
+
+test("snippet: nested multipart/mixed with a PDF skips the attachment and finds the text", async () => {
+  const raw = mime(["Content-Type: multipart/mixed; boundary=outer"],
+    "--outer\r\nContent-Type: multipart/related; boundary=inner\r\n\r\n--inner\r\nContent-Type: multipart/alternative; boundary=deep\r\n\r\n--deep\r\nContent-Type: text/html\r\n\r\n<p>second choice</p>\r\n--deep\r\nContent-Type: text/plain\r\n\r\nfirst choice\r\n--deep--\r\n--inner--\r\n--outer\r\nContent-Type: application/pdf; name=\"a.pdf\"\r\nContent-Disposition: attachment; filename=\"a.pdf\"\r\nContent-Transfer-Encoding: base64\r\n\r\nJVBERi0xLjQK\r\n--outer--\r\n");
+  assert.equal(await snippet(raw), "first choice");
+});
+
+test("snippet: plain text wins over html wherever it sits, and an attachment text part is ignored", async () => {
+  const raw = mime(["Content-Type: multipart/mixed; boundary=m"],
+    "--m\r\nContent-Type: text/html\r\n\r\n<p>html first</p>\r\n--m\r\nContent-Type: text/plain\r\n\r\nplain later\r\n--m\r\nContent-Type: text/plain; name=\"n.txt\"\r\nContent-Disposition: attachment; filename=\"n.txt\"\r\n\r\nattached\r\n--m--\r\n");
+  assert.equal(await snippet(raw), "plain later");
+  const onlyAttached = mime(["Content-Type: multipart/mixed; boundary=m"], "--m\r\nContent-Type: text/plain\r\nContent-Disposition: attachment; filename=\"n.txt\"\r\n\r\nattached\r\n--m--\r\n");
+  assert.equal(await snippet(onlyAttached), "");
+});
+
+test("snippet: a single-part text/plain 7bit body keeps working and is cut at 200 characters", async () => {
+  assert.equal(await snippet(mime(["Content-Type: text/plain"], "one\r\n\r\ntwo   three")), "one two three");
+  assert.equal((await snippet(mime([], "x".repeat(500)))).length, 200);
+});
+
+test("snippet: 1 MB or more yields an empty snippet, one byte under is computed", async () => {
+  const head = "From: a@example.com\r\nContent-Type: text/plain\r\n\r\nhello ";
+  const make = (total) => bytes(head + "y".repeat(total - head.length));
+  assert.equal(await snippet(make(1_048_576)), "");
+  assert.match(await snippet(make(1_048_575)), /^hello y+$/);
+});
+
+test("snippet: malformed input yields an empty string instead of throwing", async () => {
+  const cases = [
+    mime(["Content-Type: multipart/mixed"], "--x\r\nhi"),
+    mime(["Content-Type: multipart/mixed; boundary=x"], "--x\r\nContent-Type: text/plain\r\nContent-Transfer-Encoding: base64\r\n\r\n!!!not base64!!!\r\n--x--"),
+    mime(["Content-Type: multipart/mixed; boundary=x"], "--x"),
+    mime(["Content-Type: text/html; charset=no-such-charset", "Content-Transfer-Encoding: quoted-printable"], "<p>=ZZ=</p><"),
+    mime(["Content-Type: text/html"], "<<<<<>>>> &#99999999999; &#xD800; <!-- unterminated <style>"),
+    new Uint8Array(0),
+  ];
+  for (const raw of cases) assert.equal(typeof (await summarize(raw)).snippet, "string");
+  assert.equal(await snippet(cases[0]), "");
+});
+
+test("snippet: invisible preheader padding is dropped", async () => {
+  const pad = String.fromCharCode(0x200b, 0x34f, 0xad, 0xfeff).repeat(50);
+  assert.equal(await snippet(mime(["Content-Type: text/html"], `<div>${pad}&zwnj;&nbsp;</div><p>Real preview</p>`)), "Real preview");
+});
+
+test("snippet: a flood of unclosed tags stays fast", async () => {
+  const raw = mime(["Content-Type: text/html"], "<style>".repeat(30_000) + "<a ".repeat(30_000));
+  const started = performance.now();
+  await snippet(raw);
+  assert.ok(performance.now() - started < 500);
+});

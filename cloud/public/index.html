@@ -201,8 +201,19 @@ const BANNERS = {
   lost: ["danger", "Lost connection to the mail service. Retrying…"],
   store: ["danger", "Inbox storage is unavailable. Mail already stored is safe and will show when it is back."],
 };
-const POLL_SECONDS = 30;
-const STATUS_EVERY = 2;
+const POLL_SECONDS = 10;
+const IDLE_POLL_SECONDS = 60;
+const IDLE_AFTER_SECONDS = 900;
+const STATUS_SECONDS = 60;
+const FULL_REFRESH_SECONDS = 300;
+const LIST_CAP = 200;
+let cursor = 0;
+let epoch = 0;
+let lastFull = 0;
+let lastTick = 0;
+let lastStatus = 0;
+let lastInput = Date.now();
+let renderedAt = 0;
 const RAW_PREVIEW_BYTES = 2_000_000;
 const INLINE_IMAGE_BYTES = 8_000_000;
 
@@ -236,7 +247,7 @@ function fullDate(iso) {
 
 async function api(path, options = {}) {
   const res = await fetch(path, { ...options, headers: { "Content-Type": "application/json" } });
-  if (res.status === 401) { me = null; messages = []; current = null; showNoAddress(); throw new Error("401"); }
+  if (res.status === 401) { me = null; resetList(); current = null; showNoAddress(); throw new Error("401"); }
   return res;
 }
 
@@ -395,12 +406,41 @@ function renderCompact() {
   link($("#nextMsg"), order[index + 1]);
 }
 
-async function refresh() {
+function resetList() {
+  messages = [];
+  truncated = false;
+  cursor = 0;
+  lastFull = 0;
+  epoch += 1;
+}
+
+function merge(incoming) {
+  const fresh = new Set(incoming.map((m) => m.id));
+  const merged = sortMessages([...incoming, ...messages.filter((m) => !fresh.has(m.id))], DEFAULT_SORT);
+  truncated = truncated || merged.length > LIST_CAP;
+  messages = merged.slice(0, LIST_CAP);
+}
+
+async function refresh(full = true) {
+  const at = epoch;
+  const incremental = !full && lastFull > 0;
+  let changed = true;
   try {
-    const body = await (await api("/api/messages")).json();
-    messages = body.messages;
-    truncated = body.truncated === true;
+    const body = await (await api(incremental ? `/api/messages?since=${cursor}` : "/api/messages")).json();
+    if (at !== epoch) return;
+    if (incremental && (body.cursor < cursor || body.truncated)) return refresh(true);
+    if (incremental) {
+      changed = body.messages.length > 0;
+      merge(body.messages);
+    } else {
+      messages = body.messages;
+      truncated = body.truncated === true;
+      lastFull = Date.now();
+    }
+    cursor = body.cursor ?? cursor;
   } catch { return; }
+  if (!changed && Date.now() - renderedAt < 60_000) return;
+  renderedAt = Date.now();
   refreshSidebars();
   if (current) renderCompact(); else renderList();
 }
@@ -428,6 +468,27 @@ async function inlineImages(html, files) {
   return out;
 }
 
+const BLOCK_SELECTOR = "p, div, tr, li, ul, ol, table, blockquote, section, h1, h2, h3, h4, h5, h6, hr, pre";
+
+function htmlToText(html) {
+  if (!html) return "";
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  doc.querySelectorAll("head, style, script, template, noscript").forEach((el) => el.remove());
+  const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT);
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    if (!node.parentElement.closest("pre")) node.nodeValue = node.nodeValue.replace(/[ \t\r\n\f]+/g, " ");
+  }
+  doc.querySelectorAll("br").forEach((el) => el.replaceWith("\n"));
+  doc.querySelectorAll("td, th").forEach((el) => el.append(" "));
+  doc.querySelectorAll("a[href]").forEach((el) => {
+    const href = el.getAttribute("href").trim();
+    const label = el.textContent.trim();
+    if (/^https?:\/\//i.test(href) && label !== href) el.append(label ? ` (${href})` : href);
+  });
+  doc.querySelectorAll(BLOCK_SELECTOR).forEach((el) => el.append("\n"));
+  return doc.body.textContent.split("\n").map((line) => line.replace(/[ \t\u00a0]+/g, " ").trim()).join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
 async function parseMessage(id, listed, raw) {
   const parsed = await PostalMime.parse(raw);
   const files = parsed.attachments ?? [];
@@ -443,7 +504,7 @@ async function parseMessage(id, listed, raw) {
     created: sent ?? listed?.created ?? new Date().toISOString(),
     size: raw.byteLength,
     html: parsed.html ? await inlineImages(parsed.html, files) : "",
-    text: parsed.text ?? "",
+    text: parsed.text || htmlToText(parsed.html),
     attachments: files.filter((f) => !f.related).map((f, i) => ({ partId: String(i), fileName: f.filename, contentType: f.mimeType, size: f.content.byteLength, content: f.content })),
     headers: [...groups],
     raw,
@@ -582,8 +643,7 @@ function syncSpot() {
 
 function showNoAddress() {
   me = null;
-  messages = [];
-  truncated = false;
+  resetList();
   showListLayout();
   $("#listBar").classList.add("d-none");
   refreshSidebars();
@@ -708,26 +768,30 @@ async function pollStatus() {
   renderBanner();
 }
 
-let tickCount = 0;
-
-async function tick() {
+async function tick(full = false) {
   if (ticking || document.hidden) return;
   ticking = true;
+  lastTick = Date.now();
   try {
-    if (tickCount % STATUS_EVERY === 0) await pollStatus();
-    tickCount += 1;
-    if (me) await refresh();
+    if (lastTick - lastStatus >= STATUS_SECONDS * 1000) {
+      lastStatus = lastTick;
+      await pollStatus();
+    }
+    if (me) await refresh(full || lastTick - lastFull >= FULL_REFRESH_SECONDS * 1000);
   } finally {
     ticking = false;
   }
 }
 
+const idle = () => Date.now() - lastInput > IDLE_AFTER_SECONDS * 1000;
+
 function startPolling() {
   clearInterval(timer);
-  timer = setInterval(tick, POLL_SECONDS * 1000);
+  timer = setInterval(() => { if (!idle() || Date.now() - lastTick >= IDLE_POLL_SECONDS * 1000 - 500) tick(); }, POLL_SECONDS * 1000);
 }
 
-document.addEventListener("visibilitychange", () => { if (!document.hidden && me) tick(); });
+for (const type of ["pointerdown", "pointermove", "keydown", "wheel", "touchstart"]) document.addEventListener(type, () => { lastInput = Date.now(); }, { passive: true });
+document.addEventListener("visibilitychange", () => { if (!document.hidden && me) tick(true); });
 
 async function manualRefresh() {
   const button = $("#refreshBtn");
@@ -750,8 +814,7 @@ async function manualRefresh() {
 async function enter(account, keepHash = false) {
   me = account;
   current = null;
-  messages = [];
-  truncated = false;
+  resetList();
   chipKey = "";
   if (!(keepHash && location.hash.startsWith("#/?"))) location.hash = "#/";
   closeModal();

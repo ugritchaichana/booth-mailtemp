@@ -170,11 +170,149 @@ function hasAttachment(bytes, headers) {
   return type.startsWith("multipart/mixed") && bytes.length > ATTACHMENT_SCAN_BYTES;
 }
 
-function snippetOf(bytes, headers, bodyStart) {
+const SNIPPET_MAX_MESSAGE_BYTES = 1_048_576;
+const SNIPPET_PLAIN_BYTES = 16384;
+const SNIPPET_HTML_BYTES = 131072;
+const SNIPPET_SCAN_BYTES = 262144;
+const MAX_MIME_DEPTH = 6;
+const MAX_MIME_PARTS = 50;
+const BLOCK_TAGS = new Set(["br", "p", "div", "tr", "td", "th", "li", "ul", "ol", "table", "blockquote", "section", "h1", "h2", "h3", "h4", "h5", "h6", "hr"]);
+const SKIPPED_TAGS = new Set(["head", "style", "script", "title"]);
+const ENTITIES = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ", zwnj: "", zwj: "", shy: "", ndash: "-", mdash: "-", hellip: "..." };
+const INVISIBLE = /[\u00ad\u034f\u200b-\u200f\u2060\ufeff]/g;
+
+function parameter(header, name) {
+  const match = new RegExp(`${name}\\s*=\\s*(?:"([^"]*)"|([^;\\s]+))`, "i").exec(header ?? "");
+  return match ? (match[1] ?? match[2]) : "";
+}
+
+function partRanges(bytes, start, boundary) {
+  const text = latin1.decode(bytes.subarray(start, start + SNIPPET_SCAN_BYTES));
+  const marker = `--${boundary}`;
+  const ranges = [];
+  let from = text.indexOf(marker);
+  while (from >= 0 && ranges.length < MAX_MIME_PARTS) {
+    if (from > 0 && text[from - 1] !== "\n") {
+      from = text.indexOf(marker, from + marker.length);
+      continue;
+    }
+    const tail = from + marker.length;
+    if (text.startsWith("--", tail)) break;
+    const lineEnd = text.indexOf("\n", tail);
+    if (lineEnd < 0) break;
+    const next = text.indexOf(`\n${marker}`, lineEnd);
+    const end = next < 0 ? text.length : text[next - 1] === "\r" ? next - 1 : next;
+    ranges.push([start + lineEnd + 1, start + Math.max(end, lineEnd + 1)]);
+    if (next < 0) break;
+    from = next + 1;
+  }
+  return ranges;
+}
+
+function findText(bytes, headers, bodyStart, depth, found) {
   const type = typeOf(headers);
-  const encoding = (headers.get("content-transfer-encoding") ?? "7bit").toLowerCase();
-  if ((type && !type.startsWith("text/plain")) || (encoding !== "7bit" && encoding !== "8bit")) return "";
-  return decodeText(bytes.subarray(bodyStart, bodyStart + 2000)).replace(/\s+/g, " ").trim().slice(0, SNIPPET_CHARS);
+  if ((headers.get("content-disposition") ?? "").toLowerCase().startsWith("attachment")) return;
+  if (type.startsWith("multipart/")) {
+    const boundary = parameter(headers.get("content-type"), "boundary");
+    if (!boundary || depth >= MAX_MIME_DEPTH) return;
+    for (const [from, to] of partRanges(bytes, bodyStart, boundary)) {
+      const part = bytes.subarray(from, to);
+      const blank = part[0] === 10 || (part[0] === 13 && part[1] === 10);
+      findText(part, blank ? new Map() : parseHeaderBlock(part), blank ? (part[0] === 10 ? 1 : 2) : headerEnd(part).body, depth + 1, found);
+      if (found.plain) return;
+    }
+    return;
+  }
+  const kind = !type || type.startsWith("text/plain") ? "plain" : type.startsWith("text/html") ? "html" : null;
+  if (kind && !found[kind]) found[kind] = { bytes, headers, bodyStart };
+}
+
+function transferDecode(bytes, encoding) {
+  if (encoding === "base64") {
+    const clean = latin1.decode(bytes).replace(/[^A-Za-z0-9+/]/g, "");
+    const binary = atob(clean.slice(0, clean.length - (clean.length % 4)));
+    const out = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) out[i] = binary.charCodeAt(i);
+    return out;
+  }
+  if (encoding !== "quoted-printable") return bytes;
+  const out = new Uint8Array(bytes.length);
+  let n = 0;
+  for (let i = 0; i < bytes.length; i += 1) {
+    const c = bytes[i];
+    if (c !== 61) {
+      out[n++] = c;
+      continue;
+    }
+    const hex = String.fromCharCode(bytes[i + 1] ?? 0, bytes[i + 2] ?? 0);
+    if (/^[0-9A-Fa-f]{2}$/.test(hex)) {
+      out[n++] = parseInt(hex, 16);
+      i += 2;
+    } else if (bytes[i + 1] === 10) i += 1;
+    else if (bytes[i + 1] === 13 && bytes[i + 2] === 10) i += 2;
+    else out[n++] = c;
+  }
+  return out.subarray(0, n);
+}
+
+function entity(match, body) {
+  if (body[0] !== "#") return ENTITIES[body.toLowerCase()] ?? match;
+  const code = body[1] === "x" || body[1] === "X" ? parseInt(body.slice(2), 16) : parseInt(body.slice(1), 10);
+  return code > 0 && code <= 0x10ffff && !(code >= 0xd800 && code <= 0xdfff) ? String.fromCodePoint(code) : " ";
+}
+
+export function stripHtml(html) {
+  const lower = html.toLowerCase();
+  const unclosed = new Set();
+  let out = "";
+  let at = 0;
+  while (at < html.length) {
+    const open = html.indexOf("<", at);
+    if (open < 0) break;
+    out += html.slice(at, open);
+    if (lower.startsWith("<!--", open)) {
+      const close = lower.indexOf("-->", open + 4);
+      at = close < 0 ? html.length : close + 3;
+      out += " ";
+      continue;
+    }
+    const close = html.indexOf(">", open);
+    if (close < 0) {
+      at = html.length;
+      break;
+    }
+    const tag = /^<(\/?)([a-z][a-z0-9]*)/.exec(lower.slice(open, open + 24));
+    at = close + 1;
+    if (!tag) continue;
+    if (!tag[1] && SKIPPED_TAGS.has(tag[2]) && !unclosed.has(tag[2])) {
+      const end = lower.indexOf(`</${tag[2]}`, at);
+      if (end >= 0) at = end;
+      else unclosed.add(tag[2]);
+    }
+    if (BLOCK_TAGS.has(tag[2]) || SKIPPED_TAGS.has(tag[2])) out += " ";
+  }
+  return (out + html.slice(at)).replace(/&(#x?[0-9a-f]+|[a-z]+);/gi, entity);
+}
+
+function decodePart({ bytes, headers, bodyStart }, html) {
+  const encoding = (headers.get("content-transfer-encoding") ?? "7bit").trim().toLowerCase();
+  const raw = transferDecode(bytes.subarray(bodyStart, bodyStart + (html ? SNIPPET_HTML_BYTES : SNIPPET_PLAIN_BYTES)), encoding);
+  const text = charsetDecode(parameter(headers.get("content-type"), "charset") || "utf-8", raw);
+  return html ? stripHtml(text) : text;
+}
+
+const tidy = (text) => text.replace(INVISIBLE, "").replace(/\s+/g, " ").trim().slice(0, SNIPPET_CHARS);
+
+export function snippetOf(bytes, headers = parseHeaderBlock(bytes), bodyStart = headerEnd(bytes).body) {
+  if (bytes.length >= SNIPPET_MAX_MESSAGE_BYTES) return "";
+  try {
+    const found = {};
+    findText(bytes, headers, bodyStart, 0, found);
+    const part = found.plain ?? found.html;
+    return part ? tidy(decodePart(part, !found.plain)) : "";
+  } catch {
+    return "";
+  }
 }
 
 const toHex = (buffer) => [...new Uint8Array(buffer)].map((b) => b.toString(16).padStart(2, "0")).join("");

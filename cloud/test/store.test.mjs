@@ -203,3 +203,77 @@ test("createdAt is honoured only when it parses and is not in the future beyond 
   assert.equal(resolveCreated(iso(at + 86_400), at), at);
   for (const bad of [undefined, null, "", "yesterday", "1", 1_700_000_000, {}, "2026-13-45T99:99:99Z", "1969-12-31T00:00:00Z"]) assert.equal(resolveCreated(bad, at), at, String(bad));
 });
+
+test("since: an idle poll returns nothing and the cursor, a new mail appears once", async () => {
+  const db = openD1();
+  await ingest(db, build({ to: "alice@booth.pp.ua", subject: "first" }), { to: ["alice@booth.pp.ua"] }, DOMAIN);
+  const full = await listFor(db, "alice", DOMAIN);
+  assert.equal(full.incremental, false);
+  assert.ok(full.cursor > 0);
+  const idle = await listFor(db, "alice", DOMAIN, full.cursor);
+  assert.deepEqual([idle.messages, idle.cursor, idle.incremental], [[], full.cursor, true]);
+  await ingest(db, build({ to: "alice+x@booth.pp.ua", subject: "second" }), { to: ["alice+x@booth.pp.ua"] }, DOMAIN);
+  const next = await listFor(db, "alice", DOMAIN, full.cursor);
+  assert.deepEqual(next.messages.map((m) => m.subject), ["second"]);
+  assert.ok(next.cursor > full.cursor);
+  assert.deepEqual((await listFor(db, "alice", DOMAIN, next.cursor)).messages, []);
+  assert.equal((await listFor(db, "alice", DOMAIN, 0)).messages.length, 2);
+});
+
+test("since: another name's new mail never appears, but the cursor still moves", async () => {
+  const db = openD1();
+  await ingest(db, build({ to: "alice@booth.pp.ua" }), { to: ["alice@booth.pp.ua"] }, DOMAIN);
+  const { cursor } = await listFor(db, "alice", DOMAIN);
+  await ingest(db, build({ to: "bob@booth.pp.ua", subject: "for bob" }), { to: ["bob@booth.pp.ua"] }, DOMAIN);
+  await ingest(db, build({ to: "alicia@booth.pp.ua", subject: "for alicia" }), { to: ["alicia@booth.pp.ua"] }, DOMAIN);
+  await ingest(db, build({ to: "alice-b@booth.pp.ua", subject: "for alice-b" }), { to: ["alice-b@booth.pp.ua"] }, DOMAIN);
+  const polled = await listFor(db, "alice", DOMAIN, cursor);
+  assert.deepEqual(polled.messages, []);
+  assert.ok(polled.cursor > cursor);
+  assert.deepEqual((await listFor(db, "bob", DOMAIN, cursor)).messages.map((m) => m.subject), ["for bob"]);
+  assert.deepEqual((await listFor(db, "alice+x", DOMAIN, cursor)).messages, []);
+});
+
+test("since: hidden mail stays hidden and read state is carried", async () => {
+  const db = openD1();
+  await ingest(db, build({ to: "alice@booth.pp.ua" }), { to: ["alice@booth.pp.ua"] }, DOMAIN);
+  const { cursor } = await listFor(db, "alice", DOMAIN);
+  await ingest(db, build({ to: "alice@booth.pp.ua, alice+y@booth.pp.ua", subject: "kept" }), { to: ["alice@booth.pp.ua"] }, DOMAIN);
+  await ingest(db, build({ to: "alice@booth.pp.ua", subject: "dropped" }), { to: ["alice@booth.pp.ua"] }, DOMAIN);
+  const both = (await listFor(db, "alice", DOMAIN, cursor)).messages;
+  assert.equal(both.length, 2);
+  const dropped = both.find((m) => m.subject === "dropped");
+  const kept = both.find((m) => m.subject === "kept");
+  await hide(db, "alice", dropped.id);
+  await markRead(db, "alice", kept.id);
+  const polled = (await listFor(db, "alice", DOMAIN, cursor)).messages;
+  assert.deepEqual(polled.map((m) => [m.subject, m.read]), [["kept", true]]);
+  assert.deepEqual((await listFor(db, "alice+y", DOMAIN, cursor)).messages.map((m) => [m.subject, m.read]), [["kept", false]]);
+});
+
+test("since: the incremental list matches the full list for the same rows", async () => {
+  const db = openD1();
+  for (let i = 0; i < 5; i += 1) await ingest(db, build({ to: "alice@booth.pp.ua", subject: `m${i}` }), { to: ["alice@booth.pp.ua"] }, DOMAIN);
+  const full = await listFor(db, "alice", DOMAIN);
+  const since = await listFor(db, "alice", DOMAIN, 0);
+  const byId = (list) => [...list].sort((a, b) => (a.id < b.id ? -1 : 1));
+  assert.deepEqual(byId(since.messages), byId(full.messages));
+});
+
+test("an empty table has cursor 0 and an empty since poll", async () => {
+  const db = openD1();
+  const full = await listFor(db, "alice", DOMAIN);
+  assert.equal(full.cursor, 0);
+  assert.deepEqual((await listFor(db, "alice", DOMAIN, 0)).messages, []);
+});
+
+test("ingest stores a multipart snippet and none for a mail of 1 MB or more", async () => {
+  const db = openD1();
+  const part = (body) => `From: a@example.com\r\nTo: alice@booth.pp.ua\r\nSubject: s\r\nMessage-ID: <${crypto.randomUUID()}@example.com>\r\nContent-Type: multipart/alternative; boundary=b\r\n\r\n--b\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n${body}\r\n--b--\r\n`;
+  await ingest(db, new TextEncoder().encode(part("caf=C3=A9 ready")), { to: ["alice@booth.pp.ua"] }, DOMAIN);
+  await ingest(db, new TextEncoder().encode(part("big mail ".repeat(130_000))), { to: ["alice@booth.pp.ua"] }, DOMAIN);
+  const bySize = (await listFor(db, "alice", DOMAIN)).messages.sort((a, b) => a.size - b.size);
+  assert.equal(bySize[0].snippet, "café ready");
+  assert.ok(bySize[1].size >= 1_048_576);
+  assert.equal(bySize[1].snippet, "");
+});
