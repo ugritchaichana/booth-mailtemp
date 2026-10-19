@@ -28,22 +28,24 @@
 <div class="container-fluid h-100 d-flex flex-column">
   <div class="navbar row flex-shrink-0 bg-primary text-white d-print-none" data-bs-theme="dark">
     <div class="col"><span class="navbar-brand text-white me-0"><img src="/vendor/mailpit.svg" alt=""><span class="ms-2">Mailpit</span></span><span class="badge text-bg-light ms-2 align-middle">Admin</span></div>
-    <div class="col-auto"><button id="logout" type="button" class="btn btn-outline-light d-none"><i class="bi bi-box-arrow-right me-1"></i>Sign out</button></div>
+    <div class="col-auto d-flex align-items-center gap-2">
+      <span id="who" class="small d-none"></span><span id="roleBadge" class="badge text-bg-light d-none"></span>
+      <button id="logout" type="button" class="btn btn-outline-light d-none"><i class="bi bi-box-arrow-right me-1"></i>Sign out</button>
+    </div>
   </div>
 
   <main id="login" class="d-none flex-fill d-flex align-items-start justify-content-center pt-5">
-    <form id="loginForm" class="card w-100" style="max-width:380px" novalidate>
+    <div id="loginCard" class="card w-100" style="max-width:380px">
       <div class="card-body">
         <h1 class="h5 mb-3">Admin sign in</h1>
-        <label class="form-label small" for="password">Password</label>
-        <input id="password" type="password" class="form-control mb-3" autocomplete="current-password" required>
         <div id="loginError" class="alert alert-danger py-2 small d-none" role="alert"></div>
-        <button id="loginGo" type="submit" class="btn btn-primary w-100">Sign in</button>
+        <a id="githubSignIn" href="/api/admin/auth/login" class="btn btn-primary w-100"><i class="bi bi-github me-2"></i>Sign in with GitHub</a>
       </div>
-    </form>
+    </div>
   </main>
 
   <main id="app" class="d-none flex-fill d-flex flex-column" style="min-height:0">
+    <nav id="sections" class="nav nav-tabs pt-2 flex-shrink-0 d-none" aria-label="Admin sections"></nav>
     <div id="listPane" class="d-flex flex-column flex-fill" style="min-height:0">
       <div id="stats" class="row g-2 py-3 flex-shrink-0" aria-label="Storage statistics"></div>
       <div class="d-flex flex-wrap align-items-center gap-2 pb-2 flex-shrink-0">
@@ -105,6 +107,7 @@ let selected = new Set();
 let loading = false;
 let opened = null;
 let tab = "text";
+let session = null;
 
 const size = (bytes) => (bytes < 1000 ? `${bytes} B` : bytes < 1e6 ? `${(bytes / 1e3).toFixed(1)} kB` : bytes < 1e9 ? `${(bytes / 1e6).toFixed(1)} MB` : `${(bytes / 1e9).toFixed(2)} GB`);
 const stamp = (iso) => (iso ? new Date(iso).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" }) : "none");
@@ -126,29 +129,40 @@ async function api(path, { method = "GET", body } = {}) {
     headers: method === "GET" ? {} : { "Content-Type": "application/json", "X-Admin": "1" },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
-  if (res.status === 401 && path !== "/api/admin/login") {
-    showLogin();
+  if (res.status === 401) {
+    showLogin($("#app").classList.contains("d-none") ? "" : "Your access ended. Sign in again.");
     throw new Error("401");
   }
   return res;
 }
 
+const failure = async (res) => (await res.json().catch(() => ({}))).error ?? `request failed (${res.status})`;
+
 function showLogin(message = "") {
+  if (!message && !$("#login").classList.contains("d-none")) return;
   rows = [];
   opened = null;
+  session = null;
+  $("#adminsPane")?.remove();
+  $("#auditPane")?.remove();
+  $("#sections").replaceChildren();
+  show($("#sections"), false);
   show($("#app"), false);
-  show($("#logout"), false);
+  for (const id of ["#logout", "#who", "#roleBadge"]) show($(id), false);
   show($("#login"), true);
   const err = $("#loginError");
   err.textContent = message;
   show(err, Boolean(message));
-  $("#password").focus();
 }
 
 function showApp() {
   show($("#login"), false);
   show($("#app"), true);
   show($("#logout"), true);
+  $("#who").textContent = session.login;
+  $("#roleBadge").textContent = session.role === "owner" ? "Owner" : "Admin";
+  show($("#who"), true);
+  show($("#roleBadge"), true);
 }
 
 function statCard(label, value, extra) {
@@ -379,37 +393,153 @@ async function openMessage(id) {
   }
 }
 
+const OWNER_SECTIONS = { "#/admins": "adminsPane", "#/audit": "auditPane" };
+
 function route() {
   const match = /^#\/m\/([A-Za-z0-9_-]{1,64})$/.exec(location.hash);
+  const owned = session?.role === "owner" ? OWNER_SECTIONS[location.hash] : undefined;
+  for (const id of Object.values(OWNER_SECTIONS)) { const pane = document.getElementById(id); if (pane) show(pane, id === owned); }
+  document.querySelectorAll("#sections a").forEach((a) => a.classList.toggle("active", a.getAttribute("href") === (owned ? location.hash : "#/")));
+  if (owned) {
+    opened = null;
+    show($("#listPane"), false);
+    show($("#viewPane"), false);
+    return owned === "adminsPane" ? loadAdmins() : loadAudit();
+  }
   if (!$("#app").classList.contains("d-none") && match) return openMessage(match[1]);
   opened = null;
   show($("#viewPane"), false);
   show($("#listPane"), true);
 }
 
+const shortTime = (iso) => new Date(iso).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "medium" });
+
+function inlineError(el, message) {
+  el.textContent = message ?? "";
+  show(el, Boolean(message));
+}
+
+async function loadAdmins() {
+  const errorBox = $("#adminsError");
+  try {
+    const res = await api("/api/admin/admins");
+    if (!res.ok) return inlineError(errorBox, await failure(res));
+    const { admins, owners } = await res.json();
+    $("#adminRows").replaceChildren(...admins.map((a) => h("tr", { "data-login": a.login },
+      h("td", {}, a.login),
+      h("td", { class: "small text-muted" }, String(a.id)),
+      h("td", { class: "small text-nowrap" }, shortTime(a.addedAt)),
+      h("td", { class: "small text-muted" }, String(a.addedBy)),
+      h("td", { class: "text-end" }, h("button", { type: "button", class: "btn btn-outline-danger btn-sm", "data-remove": a.id, onclick: () => askRemove(a) }, icon("person-dash-fill", "me-1"), "Remove")))));
+    show($("#adminsEmpty"), admins.length === 0);
+    $("#ownerIds").textContent = `Owners are set in the Worker config (GitHub ids ${owners.join(", ")}) and cannot be changed here.`;
+  } catch (err) { if (err.message !== "401") inlineError(errorBox, "Could not load the admins. Try again."); }
+}
+
+function askRemove(admin) {
+  $("#adminConfirmText").textContent = `Remove ${admin.login}? They lose access on their next request.`;
+  const bar = $("#adminConfirm");
+  bar.dataset.id = String(admin.id);
+  bar.classList.remove("d-none");
+  bar.classList.add("d-flex");
+  $("#adminConfirmNo").focus();
+}
+
+function closeAdminConfirm() {
+  const bar = $("#adminConfirm");
+  bar.classList.add("d-none");
+  bar.classList.remove("d-flex");
+  delete bar.dataset.id;
+}
+
+async function removeAdmin() {
+  const id = Number($("#adminConfirm").dataset.id);
+  closeAdminConfirm();
+  try {
+    const res = await api("/api/admin/admins/remove", { method: "POST", body: { github_id: id } });
+    inlineError($("#adminsError"), res.ok ? "" : await failure(res));
+  } catch (err) { if (err.message !== "401") inlineError($("#adminsError"), "Could not remove the admin. Try again."); return; }
+  await loadAdmins();
+}
+
+async function addAdmin(e) {
+  e.preventDefault();
+  const input = $("#adminLogin");
+  const login = input.value.trim();
+  if (!login) return inlineError($("#adminsError"), "Enter a GitHub username.");
+  const button = $("#adminAdd");
+  button.disabled = true;
+  try {
+    const res = await api("/api/admin/admins", { method: "POST", body: { login } });
+    if (!res.ok) return inlineError($("#adminsError"), await failure(res));
+    input.value = "";
+    inlineError($("#adminsError"), "");
+    await loadAdmins();
+  } catch (err) { if (err.message !== "401") inlineError($("#adminsError"), "Could not reach the server."); } finally { button.disabled = false; }
+}
+
+async function loadAudit() {
+  const errorBox = $("#auditError");
+  try {
+    const res = await api("/api/admin/audit");
+    if (!res.ok) return inlineError(errorBox, await failure(res));
+    const { entries } = await res.json();
+    $("#auditRows").replaceChildren(...entries.map((e) => h("tr", { "data-action": e.action },
+      h("td", { class: "small text-nowrap" }, shortTime(e.at)),
+      h("td", { class: "small" }, `${e.actor} (${e.actorId})`),
+      h("td", {}, e.action),
+      h("td", { class: "cell-clip small", title: e.target }, e.target),
+      h("td", { class: "cell-clip small text-muted", title: e.detail }, e.detail))));
+    show($("#auditEmpty"), entries.length === 0);
+    inlineError(errorBox, "");
+  } catch (err) { if (err.message !== "401") inlineError(errorBox, "Could not load the audit log. Try again."); }
+}
+
+function buildOwnerSections() {
+  const link = (href, label) => h("a", { class: "nav-link", href }, label);
+  $("#sections").replaceChildren(link("#/", "Mail"), link("#/admins", "Admins"), link("#/audit", "Audit"));
+  show($("#sections"), true);
+  $("#app").append(
+    h("section", { id: "adminsPane", class: "d-none flex-fill overflow-auto pb-5", style: "min-height:0", "aria-label": "Admins" },
+      h("form", { id: "adminForm", class: "d-flex gap-2 py-3", style: "max-width:32rem", novalidate: true, onsubmit: addAdmin },
+        h("input", { id: "adminLogin", class: "form-control", type: "text", "aria-label": "GitHub username", placeholder: "GitHub username", maxlength: "39", autocomplete: "off", autocapitalize: "off", spellcheck: "false" }),
+        h("button", { id: "adminAdd", type: "submit", class: "btn btn-primary text-nowrap" }, icon("person-plus-fill", "me-1"), "Add admin")),
+      h("div", { id: "adminsError", class: "alert alert-danger py-2 small d-none", role: "alert" }),
+      h("div", { id: "adminConfirm", class: "alert alert-danger d-none align-items-center gap-2", role: "alertdialog", "aria-labelledby": "adminConfirmText" },
+        h("span", { id: "adminConfirmText", class: "me-auto" }),
+        h("button", { id: "adminConfirmYes", type: "button", class: "btn btn-danger btn-sm", onclick: removeAdmin }, "Remove"),
+        h("button", { id: "adminConfirmNo", type: "button", class: "btn btn-outline-secondary btn-sm", onclick: closeAdminConfirm }, "Cancel")),
+      h("table", { class: "table table-sm align-middle mb-2" },
+        h("thead", {}, h("tr", {}, ...["Username", "GitHub id", "Added", "Added by (id)"].map((t) => h("th", { scope: "col" }, t)), h("th", { scope: "col" }))),
+        h("tbody", { id: "adminRows" })),
+      h("div", { id: "adminsEmpty", class: "text-muted py-3 d-none" }, "No admins yet."),
+      h("p", { id: "ownerIds", class: "small text-muted" })),
+    h("section", { id: "auditPane", class: "d-none flex-fill overflow-auto pb-5", style: "min-height:0", "aria-label": "Audit log" },
+      h("div", { class: "d-flex align-items-center gap-2 py-3" },
+        h("button", { id: "auditRefresh", type: "button", class: "btn btn-outline-secondary", onclick: loadAudit }, icon("arrow-clockwise", "me-1"), "Refresh"),
+        h("small", { class: "text-muted" }, "Latest 200 entries, newest first.")),
+      h("div", { id: "auditError", class: "alert alert-danger py-2 small d-none", role: "alert" }),
+      h("table", { class: "table table-sm align-middle mb-2" },
+        h("thead", {}, h("tr", {}, ...["When", "Who", "Action", "Target", "Detail"].map((t) => h("th", { scope: "col" }, t)))),
+        h("tbody", { id: "auditRows" })),
+      h("div", { id: "auditEmpty", class: "text-muted py-3 d-none" }, "No entries yet.")));
+}
+
 async function start() {
   try {
-    const res = await api("/api/admin/stats");
+    const res = await api("/api/admin/me");
     if (res.status === 404) return showLogin("The admin area is not enabled.");
     if (!res.ok) return showLogin("The admin service is unavailable.");
-    renderStats(await res.json());
+    session = await res.json();
+    const stats = await api("/api/admin/stats");
+    if (!stats.ok) return showLogin("The admin service is unavailable.");
+    renderStats(await stats.json());
   } catch { return; }
   showApp();
+  if (session.role === "owner") buildOwnerSections();
   await loadList();
   route();
 }
-
-$("#loginForm").addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const button = $("#loginGo");
-  button.disabled = true;
-  try {
-    const res = await api("/api/admin/login", { method: "POST", body: { password: $("#password").value } });
-    $("#password").value = "";
-    if (res.ok) return await start();
-    showLogin(res.status === 429 ? "Too many failed attempts. Try again in 10 minutes." : res.status === 404 ? "The admin area is not enabled." : "Wrong password.");
-  } catch { showLogin("Could not reach the server."); } finally { button.disabled = false; }
-});
 
 $("#logout").addEventListener("click", async () => {
   try { await api("/api/admin/logout", { method: "POST", body: {} }); } catch {}

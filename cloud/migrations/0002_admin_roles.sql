@@ -1,0 +1,18 @@
+CREATE TABLE IF NOT EXISTS admins (
+  github_id INTEGER PRIMARY KEY,
+  login TEXT NOT NULL,
+  added_by INTEGER NOT NULL,
+  added_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS admin_audit (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  at INTEGER NOT NULL,
+  actor_id INTEGER NOT NULL,
+  actor_login TEXT NOT NULL,
+  action TEXT NOT NULL,
+  target TEXT NOT NULL DEFAULT '',
+  detail TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS admin_audit_at ON admin_audit (at);
