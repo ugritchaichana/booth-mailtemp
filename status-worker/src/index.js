@@ -21,9 +21,8 @@ main{max-width:560px;margin:0 auto;padding:32px 16px 40px}
 h1{font-size:1.5rem;line-height:1.3;margin:0 0 12px}
 p{margin:12px 0}
 .bar{height:8px;border-radius:4px;background:var(--track);overflow:hidden;margin:20px 0}
-.bar i{display:block;height:100%;width:0;background:var(--accent);animation:fill ${REDIRECT_SECONDS}s linear forwards}
-@keyframes fill{to{width:100%}}
-@media (prefers-reduced-motion:reduce){.bar i{animation:none;width:100%}}
+.bar i{display:block;height:100%;width:0;background:var(--accent);transition:width 1s linear}
+@media (prefers-reduced-motion:reduce){.bar i{transition:none}}
 .go{display:block;text-align:center;background:var(--accent);color:var(--accent-text);text-decoration:none;font-weight:700;font-size:1.2rem;padding:14px 20px;border-radius:10px}
 .go:hover,.go:focus-visible{filter:brightness(1.12);outline:3px solid var(--accent);outline-offset:2px}
 </style>
@@ -33,12 +32,12 @@ p{margin:12px 0}
 <main>
 <div class="card">
 <h1>Moved to mail.booth.pp.ua</h1>
-<p>Email addresses are unchanged. Redirecting in ${REDIRECT_SECONDS} seconds.</p>
-<div class="bar" role="progressbar" aria-label="Redirecting"><i></i></div>
+<p>Email addresses are unchanged. Redirecting in <span id="n">${REDIRECT_SECONDS}</span> seconds.</p>
+<div class="bar" role="progressbar" aria-label="Redirecting"><i id="b"></i></div>
 <a class="go" href="${TARGET_URL}">Go now</a>
 </div>
 </main>
-<script>setTimeout(function(){location.replace("${TARGET_URL}")},${REDIRECT_SECONDS * 1000})</script>
+<script>var n=document.getElementById("n"),b=document.getElementById("b"),k=0;function step(){if(k<${REDIRECT_SECONDS}){n.textContent=${REDIRECT_SECONDS}-k;b.style.width=++k*100/${REDIRECT_SECONDS}+"%"}}setTimeout(function(){step();setInterval(step,1000)},50);setTimeout(function(){location.replace("${TARGET_URL}")},${REDIRECT_SECONDS * 1000})</script>
 </body>
 </html>
 `;
