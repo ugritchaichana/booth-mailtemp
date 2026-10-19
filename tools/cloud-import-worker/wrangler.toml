@@ -1,0 +1,9 @@
+name = "mailtemp-cloud-import"
+main = "worker.mjs"
+compatibility_date = "2026-10-01"
+workers_dev = true
+send_metrics = false
+
+[[services]]
+binding = "CLOUD"
+service = "mailtemp-cloud"

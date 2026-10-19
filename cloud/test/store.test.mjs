@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import { openD1 } from "./d1-shim.mjs";
-import { CHUNK_BYTES, MAX_RAW_BYTES, hide, ingest, janitor, listFor, markRead, ownMessage, rawStream, splitChunks } from "../src/store.js";
+import { CHUNK_BYTES, MAX_RAW_BYTES, hide, ingest, janitor, listFor, markRead, ownMessage, rawStream, resolveCreated, splitChunks } from "../src/store.js";
 
 const DOMAIN = "booth.pp.ua";
 const sha = (bytes) => crypto.createHash("sha256").update(bytes).digest("hex");
@@ -165,4 +165,41 @@ test("the janitor deletes the oldest whole messages until raw bytes fit the cap"
   assert.deepEqual(left, ["m3", "m4"]);
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM chunks").first("n"), 2);
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM recipients").first("n"), 2);
+});
+
+test("an explicit past createdAt becomes the list time and the default stays the ingest time", async () => {
+  const db = openD1();
+  const before = Math.floor(Date.now() / 1000);
+  const past = "2026-10-17T05:12:33.250+07:00";
+  await ingest(db, build({ to: "stamp@booth.pp.ua", subject: "imported" }), { to: ["stamp@booth.pp.ua"] }, DOMAIN, { createdAt: past });
+  await ingest(db, build({ to: "stamp@booth.pp.ua", subject: "live" }), { to: ["stamp@booth.pp.ua"] }, DOMAIN);
+  const bySubject = Object.fromEntries((await listFor(db, "stamp", DOMAIN)).messages.map((m) => [m.subject, m.created]));
+  assert.equal(bySubject.imported, new Date(past).toISOString().replace(".250Z", ".000Z"));
+  assert.ok(Date.parse(bySubject.live) / 1000 >= before);
+});
+
+test("chunks keep the ingest time so the orphan sweep cannot take an import in flight", async () => {
+  const db = openD1();
+  const before = Math.floor(Date.now() / 1000);
+  await ingest(db, build({ to: "stamp@booth.pp.ua" }), { to: ["stamp@booth.pp.ua"] }, DOMAIN, { createdAt: "2026-01-01T00:00:00Z" });
+  assert.ok(db.prepare("SELECT MIN(created) AS c FROM chunks").first("c") >= before);
+});
+
+test("a duplicate import keeps the stored time", async () => {
+  const db = openD1();
+  const raw = build({ to: "stamp@booth.pp.ua" });
+  await ingest(db, raw, { to: ["stamp@booth.pp.ua"] }, DOMAIN, { createdAt: "2026-10-01T00:00:00Z" });
+  const again = await ingest(db, raw, { to: ["stamp@booth.pp.ua"] }, DOMAIN, { createdAt: "2026-10-02T00:00:00Z" });
+  assert.equal(again.duplicate, true);
+  assert.equal((await listFor(db, "stamp", DOMAIN)).messages[0].created, "2026-10-01T00:00:00.000Z");
+});
+
+test("createdAt is honoured only when it parses and is not in the future beyond the skew", () => {
+  const at = 1_800_000_000;
+  const iso = (seconds) => new Date(seconds * 1000).toISOString();
+  assert.equal(resolveCreated(iso(at - 86_400), at), at - 86_400);
+  assert.equal(resolveCreated(iso(at + 299), at), at + 299);
+  assert.equal(resolveCreated(iso(at + 301), at), at);
+  assert.equal(resolveCreated(iso(at + 86_400), at), at);
+  for (const bad of [undefined, null, "", "yesterday", "1", 1_700_000_000, {}, "2026-13-45T99:99:99Z", "1969-12-31T00:00:00Z"]) assert.equal(resolveCreated(bad, at), at, String(bad));
 });

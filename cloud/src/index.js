@@ -15,8 +15,8 @@ export default class MailtempCloud extends WorkerEntrypoint {
     }
   }
 
-  async ingest(raw, envelope) {
-    const result = await ingest(this.env.DB, raw, envelope, this.env.MAIL_DOMAIN);
+  async ingest(raw, envelope, options) {
+    const result = await ingest(this.env.DB, raw, envelope, this.env.MAIL_DOMAIN, options);
     log("ingest", { id: result.id, stored: result.stored, duplicate: result.duplicate ?? false, size: result.size ?? null, chunks: result.chunks ?? null });
     return result;
   }
