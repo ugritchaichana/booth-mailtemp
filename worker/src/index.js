@@ -32,8 +32,25 @@ async function push(env, captureId, body, from, to) {
   if (res.status < 200 || res.status > 299) throw new Error(`bridge status ${res.status}`);
 }
 
+function copyToCloud(env, ctx, captureId, body, from, to) {
+  try {
+    if (!env.CLOUD) return;
+    const copy = (async () => {
+      try {
+        const result = await env.CLOUD.ingest(body, { from, to: [to] });
+        log("CLOUD_COPY_OK", { captureId, id: result?.id, stored: result?.stored, size: body.byteLength });
+      } catch (err) {
+        log("CLOUD_COPY_ERROR", { captureId, size: body.byteLength, error: String(err?.message ?? err).slice(0, 200) });
+      }
+    })();
+    ctx?.waitUntil(copy);
+  } catch {
+    log("CLOUD_COPY_ERROR", { captureId, size: body.byteLength, error: "setup" });
+  }
+}
+
 export default {
-  async email(message, env) {
+  async email(message, env, ctx) {
     const captureId = crypto.randomUUID();
     const from = message.from;
     const to = message.to;
@@ -49,6 +66,7 @@ export default {
     try {
       await push(env, captureId, body, from, to);
       log("CAPTURE_DELIVERED", { captureId, to, size: body.byteLength });
+      copyToCloud(env, ctx, captureId, body, from, to);
       return;
     } catch (err) {
       pushError = String(err);

@@ -20,5 +20,9 @@ id = "5b112b2f57b04c9fafcc4510dacd3755"
 binding = "MONITOR_STATE"
 id = "17ea44a78f754f0588ff2c44b8ee75c7"
 
+[[services]]
+binding = "CLOUD"
+service = "mailtemp-cloud"
+
 [observability]
 enabled = true
