@@ -34,13 +34,19 @@ export default {
       return;
     }
 
+    const size = body.byteLength;
     let ingestError = "";
     try {
-      const result = await ingest(env, body, from, to);
+      const result = await ingest(env, body.slice(0), from, to);
       logOutcome(captureId, to, body.byteLength, result);
       return;
     } catch (err) {
       ingestError = String(err?.message ?? err).slice(0, 200);
+    }
+
+    if (body.byteLength !== size) {
+      log("CAPTURE_ERROR", { captureId, to, stage: "detached", size, found: body.byteLength });
+      throw new Error("mail buffer detached before the KV fallback");
     }
 
     try {
@@ -63,7 +69,7 @@ export default {
       try {
         const entry = await env.CAPTURE_FALLBACK.getWithMetadata(name, "arrayBuffer");
         if (!entry.value) continue;
-        const result = await ingest(env, entry.value, entry.metadata.from, entry.metadata.to);
+        const result = await ingest(env, entry.value.slice(0), entry.metadata.from, entry.metadata.to);
         await env.CAPTURE_FALLBACK.delete(name);
         logOutcome(name, entry.metadata.to, entry.metadata.size, result, { replay: true });
       } catch (err) {

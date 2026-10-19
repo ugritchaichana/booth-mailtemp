@@ -85,6 +85,46 @@ test("ingest throws synchronously: same KV fallback", async () => {
   assert.equal(kv.puts.length, 1);
 });
 
+const detachingCloud = () => ({ async ingest(raw) { structuredClone(raw, { transfer: [raw] }); throw new Error("ingest failed after the RPC took the buffer"); } });
+
+test("ingest detaches the buffer it was given and then throws: KV still gets the original bytes", async () => {
+  const kv = kvStore();
+  const { outcome, logs } = await receive({ CLOUD: detachingCloud(), CAPTURE_FALLBACK: kv, LAST_RESORT: "rethrow" });
+  assert.equal(outcome.error, undefined);
+  assert.equal(kv.puts.length, 1);
+  assert.deepEqual(new Uint8Array(kv.puts[0].value), RAW);
+  assert.equal(kv.puts[0].opts.metadata.size, RAW.byteLength);
+  assert.deepEqual(events(logs), ["CAPTURE_FALLBACK"]);
+});
+
+test("ingest receives a copy, not the buffer kept for the KV fallback", async () => {
+  const seen = [];
+  const kv = kvStore();
+  const cloud = { async ingest(raw) { seen.push(raw); throw new Error("x"); } };
+  await receive({ CLOUD: cloud, CAPTURE_FALLBACK: kv });
+  assert.notEqual(seen[0], kv.puts[0].value);
+  assert.deepEqual(new Uint8Array(seen[0]), RAW);
+});
+
+test("buffer detached before the KV put: CAPTURE_ERROR detached, the email rejects, nothing stored", async () => {
+  const kv = kvStore();
+  const realSlice = ArrayBuffer.prototype.slice;
+  ArrayBuffer.prototype.slice = function sameBuffer() { return this; };
+  let result;
+  try {
+    result = await receive({ CLOUD: detachingCloud(), CAPTURE_FALLBACK: kv, LAST_RESORT: "swallow" });
+  } finally {
+    ArrayBuffer.prototype.slice = realSlice;
+  }
+  assert.match(String(result.outcome.error), /detached/);
+  assert.equal(kv.puts.length, 0);
+  const err = result.logs.find((l) => l.event === "CAPTURE_ERROR");
+  assert.equal(err.stage, "detached");
+  assert.equal(err.size, RAW.byteLength);
+  assert.equal(err.found, 0);
+  assert.ok(!events(result.logs).includes("CAPTURE_DROPPED"));
+});
+
 test("CLOUD binding missing: the mail goes to KV, not lost", async () => {
   const kv = kvStore();
   const { outcome, logs } = await receive({ CAPTURE_FALLBACK: kv });
@@ -165,6 +205,16 @@ test("replay: a buffered mail is ingested into the cloud, then deleted", async (
   assert.equal(delivered.replay, true);
   assert.equal(delivered.captureId, "c1");
   assert.equal(delivered.size, RAW.byteLength);
+});
+
+test("replay: ingest gets a copy of the entry, and a detaching ingest does not lose the entry", async () => {
+  const seen = [];
+  const cloud = { async ingest(raw) { seen.push(raw); structuredClone(raw, { transfer: [raw] }); throw new Error("D1 down"); } };
+  const e = entry("c1");
+  const { kv } = await replay({ cloud, entries: [e] });
+  assert.notEqual(seen[0], e.value);
+  assert.equal(e.value.byteLength, RAW.byteLength);
+  assert.deepEqual(kv.deleted, []);
 });
 
 test("replay: a failing ingest keeps the entry for the next run and logs the error", async () => {
