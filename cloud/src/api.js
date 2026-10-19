@@ -3,6 +3,8 @@ import { ID_RE, usernameError } from "./rules.js";
 import { hide, lastIngest, listFor, markRead, ownMessage, rawStream } from "./store.js";
 import { handleAdmin } from "./admin.js";
 import { fail, json } from "./http.js";
+import { botCheck, turnstileOn } from "./turnstile.js";
+import { handleReport, reportsEnabled } from "./report.js";
 
 const RANDOM_CHARS = "abcdefghijklmnopqrstuvwxyz0123456789";
 const MAX_BODY = 2048;
@@ -46,7 +48,11 @@ export async function handle(request, env, ctx) {
       return json(200, { d1: "down", lastIngestAt: null, lastIngestAgeSeconds: null });
     }
   }
+  if (method === "GET" && pathname === "/api/config") return json(200, { turnstileSiteKey: turnstileOn(env) ? env.TURNSTILE_SITE_KEY : null, reports: reportsEnabled(env) });
+  if (method === "POST" && pathname === "/api/report") return handleReport(request, env, { ip, active: async () => { const active = (await accounts.sessionFrom(request.headers.get("cookie")))?.active; return active ? `${active}@${domain}` : null; } });
   if (method === "GET" && pathname === "/api/random") {
+    const blocked = await botCheck(env, request, ip, "random");
+    if (blocked) return blocked;
     if (await randomRequests.full(ip)) return fail(429, "Too many requests, try again in a moment");
     await randomRequests.hit(ip);
     for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -61,6 +67,8 @@ export async function handle(request, env, ctx) {
     if (username instanceof Response) return username;
     const problem = usernameError(username);
     if (problem) return fail(400, problem);
+    const blocked = await botCheck(env, request, ip, "open");
+    if (blocked) return blocked;
     const current = await accounts.sessionFrom(request.headers.get("cookie"));
     if ((await creations.full(ip)) && !(await accounts.exists(username))) return fail(429, "too many new addresses, try later");
     if (!current && (await sessionStarts.full(ip))) return fail(429, "too many new browsers, try later");

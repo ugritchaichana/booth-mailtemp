@@ -10,6 +10,8 @@
     "test": "node --test \"test/*.test.mjs\"",
     "test:integration": "node test/integration.mjs",
     "test:admin-browser": "node test/admin-browser.mjs",
+    "test:report": "node test/report-integration.mjs",
+    "test:report-browser": "node test/report-browser.mjs",
     "dev": "wrangler dev --local"
   },
   "devDependencies": {
