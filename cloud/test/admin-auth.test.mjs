@@ -47,7 +47,7 @@ test("the OAuth base URLs default to real GitHub and only a test override change
   assert.match((await call(local, "GET", "/api/admin/auth/login")).headers.get("location"), /^http:\/\/127\.0\.0\.1:9999\/login\/oauth\/authorize\?/);
 });
 
-test("a callback with a missing, wrong, tampered or expired state is a 400 and never reaches GitHub", async () => {
+test("a callback with a missing, wrong, tampered or expired state goes back to the admin page as expired and never reaches GitHub", async () => {
   const env = setup();
   const start = await call(env, "GET", "/api/admin/auth/login");
   const stateParam = new URL(start.headers.get("location")).searchParams.get("state");
@@ -68,8 +68,10 @@ test("a callback with a missing, wrong, tampered or expired state is a 400 and n
   ];
   for (const [name, query, header] of cases) {
     const res = await call(env, "GET", `/api/admin/auth/callback${query}`, { cookie: header });
-    assert.equal(res.status, 400, name);
+    assert.equal(res.status, 302, name);
+    assert.equal(res.headers.get("location"), "/admin?signin=expired", name);
     assert.equal(cookieNamed(res, ADMIN_COOKIE), undefined, name);
+    assert.match(cookieNamed(res, OAUTH_COOKIE), /Max-Age=0/, name);
   }
   assert.equal(fake.requests.length, 0);
 });
@@ -79,7 +81,8 @@ test("the state cookie is bound to the signing key: a cookie minted under anothe
   const start = await call(other, "GET", "/api/admin/auth/login");
   const stateParam = new URL(start.headers.get("location")).searchParams.get("state");
   const res = await call(setup(), "GET", `/api/admin/auth/callback?code=abc&state=${stateParam}`, { cookie: cookieNamed(start, OAUTH_COOKIE).split(";")[0] });
-  assert.equal(res.status, 400);
+  assert.equal(res.status, 302);
+  assert.equal(res.headers.get("location"), "/admin?signin=expired");
 });
 
 test("an owner id signs in as owner, gets a Strict 12 hour cookie, and the state cookie is cleared", async () => {
@@ -94,49 +97,106 @@ test("an owner id signs in as owner, gets a Strict 12 hour cookie, and the state
   assert.doesNotMatch(cookieNamed(await githubFlow(env, OWNER.login, { https: false }), ADMIN_COOKIE), /Secure/);
 });
 
-test("an added id signs in as admin, any other id gets a 403 page and no cookie", async () => {
+test("an added id signs in as admin, any other id goes back to the admin page as denied with no cookie", async () => {
   const env = setup();
   addAdminRow(env, HELPER);
   const ok = await githubFlow(env, HELPER.login);
   assert.equal(ok.status, 302);
   assert.deepEqual(await me(env, sessionOf(ok)), { id: HELPER.id, login: HELPER.login, role: "admin" });
   const denied = await githubFlow(env, STRANGER.login);
-  assert.equal(denied.status, 403);
-  assert.match(denied.headers.get("content-type"), /text\/html/);
+  assert.equal(denied.status, 302);
+  assert.equal(denied.headers.get("location"), "/admin?signin=denied");
   assert.equal(cookieNamed(denied, ADMIN_COOKIE), undefined);
   assert.match(cookieNamed(denied, OAUTH_COOKIE), /Max-Age=0/);
-  assert.match(await denied.text(), /not authorised/);
 });
 
 test("the numeric id decides, never the login: an owner login that now belongs to another id is refused", async () => {
   const env = setup();
   fake.addAccount("renamed-owner", 999_001);
-  assert.equal((await githubFlow(env, "renamed-owner")).status, 403);
+  assert.equal((await githubFlow(env, "renamed-owner")).headers.get("location"), "/admin?signin=denied");
   fake.addAccount(OWNER.login, OWNER.id);
 });
 
-test("GitHub failures end the login without a session: refused consent, bad code, failed token, failed user call, unreachable GitHub", async () => {
+const lands = (res, reason) => {
+  assert.equal(res.status, 302);
+  assert.equal(res.headers.get("location"), `/admin?signin=${reason}`);
+  assert.equal(cookieNamed(res, ADMIN_COOKIE), undefined);
+  assert.match(cookieNamed(res, OAUTH_COOKIE), /Max-Age=0/);
+};
+
+test("GitHub failures end the login without a session: refused consent as cancelled, the rest as github", async () => {
   const env = setup();
   fake.state.deny = true;
-  const denied = await githubFlow(env, OWNER.login);
-  assert.equal(denied.status, 403);
-  assert.equal(cookieNamed(denied, ADMIN_COOKIE), undefined);
+  lands(await githubFlow(env, OWNER.login), "cancelled");
   fake.reset();
   fake.state.failToken = true;
-  assert.equal((await githubFlow(env, OWNER.login)).status, 502);
+  lands(await githubFlow(env, OWNER.login), "github");
   fake.reset();
   fake.state.failUser = 500;
-  assert.equal((await githubFlow(env, OWNER.login)).status, 502);
+  lands(await githubFlow(env, OWNER.login), "github");
   fake.reset();
   const real = globalThis.fetch;
   globalThis.fetch = () => { throw new TypeError("fetch failed"); };
   try {
-    const res = await githubFlow(env, OWNER.login);
-    assert.equal(res.status, 502);
-    assert.equal(cookieNamed(res, ADMIN_COOKIE), undefined);
+    lands(await githubFlow(env, OWNER.login), "github");
   } finally {
     globalThis.fetch = real;
   }
+});
+
+const loginLines = () => logged.map((l) => JSON.parse(l)).filter((l) => l.event === "admin_login");
+
+test("each GitHub failure logs its stage, status and GitHub error code and nothing that could sign in", async () => {
+  const env = setup();
+  const real = globalThis.fetch;
+  const codes = [];
+  let tokenReply = null;
+  globalThis.fetch = async (input, init) => {
+    if (String(input).endsWith("/access_token")) {
+      codes.push(JSON.parse(init.body).code);
+      if (tokenReply) return tokenReply();
+    }
+    return real(input, init);
+  };
+  try {
+    fake.state.failToken = true;
+    await githubFlow(env, OWNER.login);
+    fake.state.failToken = false;
+    fake.state.failUser = 502;
+    await githubFlow(env, OWNER.login);
+    fake.state.failUser = 0;
+    tokenReply = () => new Response("<html>nope</html>", { status: 200 });
+    await githubFlow(env, OWNER.login);
+  } finally {
+    globalThis.fetch = real;
+  }
+  assert.deepEqual(loginLines().map(({ at, event, ...rest }) => rest), [
+    { ok: false, stage: "token", status: 200, error: "bad_verification_code" },
+    { ok: false, stage: "user", status: 502 },
+    { ok: false, stage: "token", status: 200 },
+  ]);
+  const states = fake.requests.filter((r) => r.path === "/login/oauth/authorize").map((r) => r.query.state);
+  assert.equal(codes.length, 3);
+  assert.equal(states.length, 3);
+  const text = logged.join("\n");
+  for (const secret of [...states, ...codes, ...fake.issued, fake.clientSecret, "nope"]) assert.ok(!text.includes(secret), secret);
+});
+
+test("an unexpected GitHub error string is dropped from the log, a code-shaped one is kept", async () => {
+  const env = setup();
+  const real = globalThis.fetch;
+  for (const error of ["redirect_uri_mismatch", "Bad <Code> with secret test-client-secret"]) {
+    globalThis.fetch = (input, init) => (String(input).endsWith("/access_token") ? Response.json({ error }) : real(input, init));
+    try {
+      await githubFlow(env, OWNER.login);
+    } finally {
+      globalThis.fetch = real;
+    }
+  }
+  const [kept, dropped] = loginLines();
+  assert.equal(kept.error, "redirect_uri_mismatch");
+  assert.equal(dropped.error, undefined);
+  assert.ok(!logged.join("\n").includes("secret"));
 });
 
 test("a GitHub code works once: replaying the same callback is refused", async () => {
@@ -148,8 +208,7 @@ test("a GitHub code works once: replaying the same callback is refused", async (
   const cookie = cookieNamed(start, OAUTH_COOKIE).split(";")[0];
   assert.equal((await call(env, "GET", callback.pathname + callback.search, { cookie })).status, 302);
   const replay = await call(env, "GET", callback.pathname + callback.search, { cookie });
-  assert.equal(replay.status, 502);
-  assert.equal(cookieNamed(replay, ADMIN_COOKIE), undefined);
+  lands(replay, "github");
 });
 
 test("the GitHub calls carry the right credentials and the token reaches only the /user call", async () => {
@@ -219,7 +278,7 @@ test("an admin removed by an owner gets 401 on their very next request with the 
   assert.equal((await call(env, "GET", "/api/admin/stats", { cookie: helper })).status, 200);
   assert.equal((await post(env, "/api/admin/admins/remove", { github_id: HELPER.id }, { cookie: owner })).status, 200);
   for (const path of ["/api/admin/me", "/api/admin/stats", "/api/admin/messages"]) assert.equal((await call(env, "GET", path, { cookie: helper })).status, 401, path);
-  assert.equal((await githubFlow(env, HELPER.login)).status, 403);
+  assert.equal((await githubFlow(env, HELPER.login)).headers.get("location"), "/admin?signin=denied");
 });
 
 test("an admin added by an owner works on the next request without signing in again", async () => {

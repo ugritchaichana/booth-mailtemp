@@ -177,6 +177,13 @@ const githubFetch = (url, init = {}) => fetch(url, {
 
 const parseUser = (body) => (Number.isSafeInteger(body?.id) && body.id > 0 && typeof body.login === "string" && LOGIN_RE.test(body.login) ? { id: body.id, login: body.login, type: body.type } : null);
 
+const errorCode = (body) => (typeof body?.error === "string" && /^[a-z_]{1,64}$/.test(body.error) ? body.error : undefined);
+
+function refused(stage, res, body) {
+  log("admin_login", { ok: false, stage, status: res.status, error: errorCode(body) });
+  return null;
+}
+
 async function githubIdentity(env, code, redirectUri) {
   const bases = githubBases(env);
   const tokenRes = await githubFetch(`${bases.oauth}/login/oauth/access_token`, {
@@ -184,10 +191,13 @@ async function githubIdentity(env, code, redirectUri) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ client_id: env.GITHUB_CLIENT_ID, client_secret: env.GITHUB_CLIENT_SECRET, code, redirect_uri: redirectUri }),
   });
-  const token = tokenRes.ok ? (await tokenRes.json()).access_token : null;
-  if (typeof token !== "string" || !token) return null;
+  const tokenBody = await tokenRes.json().catch(() => null);
+  const token = tokenRes.ok ? tokenBody?.access_token : null;
+  if (typeof token !== "string" || !token) return refused("token", tokenRes, tokenBody);
   const userRes = await githubFetch(`${bases.api}/user`, { headers: { Authorization: `Bearer ${token}` } });
-  return userRes.ok ? parseUser(await userRes.json()) : null;
+  if (!userRes.ok) return refused("user", userRes);
+  const user = parseUser(await userRes.json().catch(() => null));
+  return user ?? refused("user", userRes);
 }
 
 async function lookupUser(env, login) {
@@ -197,20 +207,10 @@ async function lookupUser(env, login) {
   return parseUser(await res.json()) ?? { missing: true };
 }
 
-function html(status, message, cookies = []) {
-  const headers = new Headers({
-    "Content-Type": "text/html; charset=utf-8",
-    "Cache-Control": "no-store",
-    "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'",
-    "X-Content-Type-Options": "nosniff",
-  });
+function backToAdmin(reason, cookies) {
+  const headers = new Headers({ Location: reason ? `/admin?signin=${reason}` : "/admin", "Cache-Control": "no-store" });
   for (const cookie of cookies) headers.append("Set-Cookie", cookie);
-  return new Response(
-    `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Admin sign in</title>`
-    + `<style>body{font:16px system-ui,sans-serif;max-width:32rem;margin:4rem auto;padding:0 1rem}</style>`
-    + `<h1>Admin sign in</h1><p>${message}</p><p><a href="/admin">Back to the admin page</a></p>`,
-    { status, headers },
-  );
+  return new Response(null, { status: 302, headers });
 }
 
 async function startLogin(url, env, secure) {
@@ -238,28 +238,23 @@ async function verifiedState(request, env, given) {
 
 async function finishLogin(request, env, url, secure) {
   const clear = oauthCookie("", secure, 0);
-  if (!(await verifiedState(request, env, url.searchParams.get("state")))) {
-    return html(400, "This sign-in link has expired or was not started here. Start again from the admin page.", [clear]);
-  }
+  if (!(await verifiedState(request, env, url.searchParams.get("state")))) return backToAdmin("expired", [clear]);
   const code = url.searchParams.get("code") ?? "";
-  if (url.searchParams.has("error") || !code || code.length > 200) return html(403, "GitHub sign-in was cancelled or refused.", [clear]);
+  if (url.searchParams.has("error") || !code || code.length > 200) return backToAdmin("cancelled", [clear]);
   let user = null;
   try {
     user = await githubIdentity(env, code, `${url.origin}/api/admin/auth/callback`);
   } catch {
     log("admin_login", { ok: false, github: "unreachable" });
   }
-  if (!user) return html(502, "GitHub did not confirm the sign-in. Try again in a minute.", [clear]);
+  if (!user) return backToAdmin("github", [clear]);
   const allowed = ownerIds(env).has(user.id) || (await env.DB.prepare("SELECT 1 AS x FROM admins WHERE github_id = ?").bind(user.id).first());
   if (!allowed) {
     log("admin_login", { ok: false, id: user.id });
-    return html(403, "This GitHub account is not authorised for the admin area.", [clear]);
+    return backToAdmin("denied", [clear]);
   }
   log("admin_login", { ok: true, id: user.id });
-  const headers = new Headers({ Location: "/admin", "Cache-Control": "no-store" });
-  headers.append("Set-Cookie", sessionCookie(await adminCookieValue(env, user), secure));
-  headers.append("Set-Cookie", clear);
-  return new Response(null, { status: 302, headers });
+  return backToAdmin("", [sessionCookie(await adminCookieValue(env, user), secure), clear]);
 }
 
 async function listAdmins(env) {
