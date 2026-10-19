@@ -28,17 +28,10 @@ jobs:
           cache-dependency-path: |
             worker/package-lock.json
             cloud/package-lock.json
-            e2e-helper/package-lock.json
-
-      - name: Generate local secrets
-        run: bash setup.sh
-
-      - name: Build images
-        run: docker compose build bridge inbox
 
       - name: Syntax check
         run: |
-          find bridge inbox janitor status-worker worker cloud tools \
+          find worker status-worker cloud tools \
             \( -name node_modules -o -name .wrangler -o -name dist \) -prune -o \
             \( -name '*.js' -o -name '*.mjs' \) -print0 |
             xargs -0 -n1 node --check
@@ -46,16 +39,13 @@ jobs:
       - name: Status worker tests
         run: node --test "status-worker/test/*.test.js"
 
-      - name: Worker tests
+      - name: Capture worker tests
         run: node --test "worker/test/*.test.js"
-
-      - name: Inbox unit tests
-        run: node --test "inbox/test/*.test.mjs"
 
       - name: Cloud unit tests
         run: node --test "cloud/test/*.test.mjs"
 
-      - name: Worker bundle (dry run, no Cloudflare credentials)
+      - name: Capture worker bundle (dry run, no Cloudflare credentials)
         working-directory: worker
         run: |
           npm ci
@@ -68,11 +58,10 @@ jobs:
           npx wrangler deploy --dry-run --outdir dist
           node test/integration.mjs
 
-  test:
-    name: test
-    needs: build
+  browser:
+    name: browser
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -80,56 +69,14 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: e2e-helper/package-lock.json
+          cache-dependency-path: cloud/package-lock.json
 
-      - name: Generate local secrets
-        run: bash setup.sh
-
-      - name: Start stack
-        run: docker compose up -d --build mailpit bridge inbox
-
-      - name: Wait for services
-        run: |
-          pass=$(grep -m1 '^MAILPIT_UI_PASSWORD=' .env | cut -d= -f2-)
-          for _ in $(seq 1 60); do
-            if curl -fsS -m 3 http://127.0.0.1:8080/healthz > /dev/null &&
-               curl -fsS -m 3 http://127.0.0.1:8090/healthz > /dev/null &&
-               curl -fsS -m 3 -u "qa:$pass" http://127.0.0.1:8025/admin/api/v1/info > /dev/null; then
-              echo "stack is up"
-              exit 0
-            fi
-            sleep 2
-          done
-          echo "stack did not become healthy in 120s"
-          exit 1
-
-      - name: Install Playwright Chromium
-        working-directory: e2e-helper
-        run: |
-          npm ci
-          npx playwright install --with-deps chromium
-          path=$(node -p "require('playwright-core').chromium.executablePath()")
-          test -x "$path"
-          echo "CHROMIUM_PATH=$path" >> "$GITHUB_ENV"
-
-      - name: Cloud admin browser check
+      - name: Install dependencies and Chromium
         working-directory: cloud
         run: |
           npm ci
-          node test/admin-browser.mjs
+          npx playwright install --with-deps chromium
 
-      - name: Isolation tests
-        run: bash inbox/test/isolation.sh
-
-      # TODO: janitor/test/janitor.sh may need the janitor service started above; adjust when it lands.
-      - name: Janitor tests
-        if: hashFiles('janitor/test/janitor.sh') != ''
-        run: bash janitor/test/janitor.sh
-
-      - name: Dump compose logs
-        if: failure()
-        run: docker compose logs --no-color
-
-      - name: Tear down
-        if: always()
-        run: docker compose down -v
+      - name: Cloud admin browser check
+        working-directory: cloud
+        run: node test/admin-browser.mjs
