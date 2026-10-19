@@ -99,15 +99,23 @@ export async function ingest(db, raw, envelope, domain, options = {}) {
 
 const person = (name, address) => ({ Name: name, Address: address });
 
-export async function listFor(db, username, domain) {
+const LIST_COLUMNS = `m.id, m.created, m.from_name, m.from_addr, m.to_json, m.cc_json, m.subject, m.size, m.attachments, m.snippet,
+            EXISTS (SELECT 1 FROM reads x WHERE x.username = ?1 AND x.id = m.id) AS is_read`;
+const NOT_HIDDEN = "NOT EXISTS (SELECT 1 FROM hidden h WHERE h.username = ?1 AND h.id = m.id)";
+const FULL_SCOPE = "m.id IN (SELECT r.message_id FROM recipients r WHERE r.local = ?1 OR (r.local >= ?2 AND r.local < ?3))";
+const SINCE_SCOPE = "m.rowid > ?5 AND EXISTS (SELECT 1 FROM recipients r WHERE r.message_id = m.id AND (r.local = ?1 OR (r.local >= ?2 AND r.local < ?3)))";
+
+export async function listFor(db, username, domain, since = null) {
+  const cursor = (await db.prepare("SELECT MAX(rowid) AS cursor FROM messages").first("cursor")) ?? 0;
+  const incremental = since !== null;
+  if (incremental && cursor <= since) return { messages: [], truncated: false, domain, cursor, incremental };
   const found = await db.prepare(
-    `SELECT m.id, m.created, m.from_name, m.from_addr, m.to_json, m.cc_json, m.subject, m.size, m.attachments, m.snippet,
-            EXISTS (SELECT 1 FROM reads x WHERE x.username = ?1 AND x.id = m.id) AS is_read
+    `SELECT ${LIST_COLUMNS}
        FROM messages m
-      WHERE m.id IN (SELECT r.message_id FROM recipients r WHERE r.local = ?1 OR (r.local >= ?2 AND r.local < ?3))
-        AND NOT EXISTS (SELECT 1 FROM hidden h WHERE h.username = ?1 AND h.id = m.id)
-      ORDER BY m.created DESC LIMIT ?4`,
-  ).bind(...ownershipArgs(username), LIST_LIMIT + 1).all();
+      WHERE ${incremental ? SINCE_SCOPE : FULL_SCOPE}
+        AND ${NOT_HIDDEN}
+      ORDER BY ${incremental ? "m.rowid" : "m.created"} DESC LIMIT ?4`,
+  ).bind(...ownershipArgs(username), LIST_LIMIT + 1, ...(incremental ? [since] : [])).all();
   const rows = found.results ?? [];
   const messages = rows.slice(0, LIST_LIMIT).map((m) => ({
     id: m.id,
@@ -121,7 +129,7 @@ export async function listFor(db, username, domain) {
     size: m.size,
     read: m.is_read === 1,
   }));
-  return { messages, truncated: rows.length > LIST_LIMIT, domain };
+  return { messages, truncated: rows.length > LIST_LIMIT, domain, cursor, incremental };
 }
 
 export async function ownMessage(db, username, id) {

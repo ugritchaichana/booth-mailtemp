@@ -143,6 +143,24 @@ try {
     if (name === "small") assert.equal((await tagged.call("GET", `/api/messages/${id}/raw`)).status, 404, "the +01 name must not read base-name mail");
   }
 
+  const polled = (browser, since) => browser.call("GET", `/api/messages?since=${since}`).then((res) => res.json());
+  const { cursor } = await (await alice.call("GET", "/api/messages")).json();
+  assert.ok(cursor > 0);
+  const idle = await polled(alice, cursor);
+  assert.deepEqual([idle.messages, idle.cursor, idle.incremental], [[], cursor, true]);
+  assert.equal((await alice.call("GET", "/api/messages?since=abc")).status, 400);
+  assert.equal((await alice.call("GET", "/api/messages?since=-1")).status, 400);
+  if (!live) {
+    await ingest({ size: 20_000, to: `${owner}@booth.pp.ua`, id: "since-mine", subject: "since mine" });
+    await ingest({ size: 20_000, to: "someoneelse@booth.pp.ua", id: "since-theirs", subject: "since theirs" });
+    const next = await polled(alice, cursor);
+    assert.deepEqual(next.messages.map((m) => m.subject), ["since mine"]);
+    assert.ok(next.cursor > cursor);
+    assert.deepEqual((await polled(stranger, cursor)).messages.map((m) => m.subject), ["since theirs"]);
+    assert.deepEqual((await polled(alice, next.cursor)).messages, []);
+    console.log(`since poll: idle 0 messages, one new mail, cursor ${cursor} -> ${next.cursor}`);
+  }
+
   if (!live) {
     assert.equal((await alice.list()).find((m) => m.subject === mail("small").subject).read, true);
     assert.equal((await tagged.list()).find((m) => m.subject === mail("medium").subject).read, false);

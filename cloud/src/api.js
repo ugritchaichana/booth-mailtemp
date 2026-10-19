@@ -4,6 +4,7 @@ import { hide, lastIngest, listFor, markRead, ownMessage, rawStream } from "./st
 
 const RANDOM_CHARS = "abcdefghijklmnopqrstuvwxyz0123456789";
 const MAX_BODY = 2048;
+const CURSOR_RE = /^\d{1,15}$/;
 
 const json = (status, body, extra = {}) => new Response(JSON.stringify(body), {
   status,
@@ -85,7 +86,12 @@ export async function handle(request, env, ctx) {
   }
   if (segments[1] !== "messages") return fail(404, "not found");
 
-  if (segments.length === 2) return method === "GET" ? json(200, await listFor(db, session.active, domain)) : fail(404, "not found");
+  if (segments.length === 2) {
+    if (method !== "GET") return fail(404, "not found");
+    const since = url.searchParams.get("since");
+    if (since !== null && !CURSOR_RE.test(since)) return fail(400, "invalid since");
+    return json(200, await listFor(db, session.active, domain, since === null ? null : Number(since)));
+  }
   const id = segments[2];
   if (!ID_RE.test(id)) return fail(404, "not found");
   const message = await ownMessage(db, session.active, id);
