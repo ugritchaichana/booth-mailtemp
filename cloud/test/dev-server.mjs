@@ -22,7 +22,7 @@ export async function startDev({ port, vars = {} }) {
   fs.writeFileSync(probeVars, `PROBE_TOKEN=${token}\n`);
   const migrate = spawnSync(process.execPath, [wrangler, "d1", "migrations", "apply", "DB", "--local", "--persist-to", persist], { cwd: root, encoding: "utf8" });
   assert.equal(migrate.status, 0, migrate.stdout + migrate.stderr);
-  const dev = spawn(process.execPath, [wrangler, "dev", "-c", "test/probe/wrangler.toml", "-c", "wrangler.toml", "--local", "--port", String(port), "--persist-to", persist], { cwd: root, stdio: ["ignore", "pipe", "pipe"] });
+  const dev = spawn(process.execPath, [wrangler, "dev", "-c", "test/probe/wrangler.toml", "-c", "wrangler.toml", "--local", "--port", String(port), "--local-upstream", `127.0.0.1:${port}`, "--persist-to", persist], { cwd: root, stdio: ["ignore", "pipe", "pipe"] });
   dev.stdout.on("data", (d) => { log += d; });
   dev.stderr.on("data", (d) => { log += d; });
   const stop = async () => {
