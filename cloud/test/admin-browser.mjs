@@ -24,7 +24,6 @@ const deleted = new Set();
 const EXPECTED = [
   (r) => r.status() === 401 && r.url().includes("/api/admin/"),
   (r) => r.status() === 403 && /\/api\/admin\/(admins(\/remove)?|audit)$/.test(r.url()),
-  (r) => r.status() === 403 && r.url().includes("/api/admin/auth/callback"),
   (r) => [400, 404].includes(r.status()) && r.url().endsWith("/api/admin/admins"),
   (r) => r.status() === 404 && /\/api\/admin\/messages\/[^/]+\/raw$/.test(r.url()) && deleted.has(r.url().split("/").at(-2)),
 ];
@@ -189,11 +188,24 @@ try {
   await strangerPage.locator("#githubSignIn").waitFor({ state: "visible" });
   await strangerPage.click("#githubSignIn");
   await strangerPage.click("#authorize");
-  await strangerPage.waitForURL(/\/api\/admin\/auth\/callback/);
-  check("an unlisted GitHub account gets a not-authorised page", /not authorised/.test(await strangerPage.locator("body").innerText()));
-  await strangerPage.click("a[href='/admin']");
-  await strangerPage.locator("#githubSignIn").waitFor({ state: "visible" });
+  await strangerPage.locator("#loginError").waitFor({ state: "visible" });
+  check("an unlisted GitHub account lands back on the admin page with a not-authorised alert", /not authorised/.test(await strangerPage.locator("#loginError").innerText()) && new URL(strangerPage.url()).pathname === "/admin");
+  check("and the sign-in reason is removed from the address bar", new URL(strangerPage.url()).search === "");
   check("and stays signed out", (await strangerPage.evaluate(async () => (await fetch("/api/admin/stats")).status)) === 401);
+
+  for (const [name, setup, expected] of [["a GitHub exchange failure", () => { github.state.failToken = true; }, /GitHub settings may be wrong/], ["a cancelled consent", () => { github.state.deny = true; }, /cancelled/]]) {
+    const failPage = await newPage();
+    github.signInAs(owner.login);
+    setup();
+    await failPage.goto(`${base}/admin`);
+    await failPage.locator("#githubSignIn").waitFor({ state: "visible" });
+    await failPage.click("#githubSignIn");
+    await failPage.click("#authorize");
+    await failPage.locator("#loginError").waitFor({ state: "visible" });
+    check(`${name} lands back on the admin page with an alert and no session`, expected.test(await failPage.locator("#loginError").innerText()) && new URL(failPage.url()).search === "" && !(await failPage.locator("#app").isVisible()));
+    github.state.failToken = false;
+    github.state.deny = false;
+  }
 
   await ownerPage.click("#logout");
   await ownerPage.locator("#githubSignIn").waitFor({ state: "visible" });

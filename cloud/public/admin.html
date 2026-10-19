@@ -525,7 +525,16 @@ function buildOwnerSections() {
       h("div", { id: "auditEmpty", class: "text-muted py-3 d-none" }, "No entries yet.")));
 }
 
+const SIGNIN_NOTICES = new Map(Object.entries({
+  expired: "The sign-in link expired or was not started on this page. Try again.",
+  cancelled: "GitHub sign-in was cancelled or refused.",
+  github: "GitHub did not confirm the sign-in. The admin app's GitHub settings may be wrong; this is a configuration problem, not your account. Try again in a minute, then check the app's client ID, secret and callback URL.",
+  denied: "This GitHub account is not authorised for the admin area.",
+}));
+
 async function start() {
+  const notice = SIGNIN_NOTICES.get(new URLSearchParams(location.search).get("signin"));
+  if (location.search) history.replaceState(null, "", location.pathname + location.hash);
   try {
     const res = await api("/api/admin/me");
     if (res.status === 404) return showLogin("The admin area is not enabled.");
@@ -534,7 +543,7 @@ async function start() {
     const stats = await api("/api/admin/stats");
     if (!stats.ok) return showLogin("The admin service is unavailable.");
     renderStats(await stats.json());
-  } catch { return; }
+  } catch { return notice && showLogin(notice); }
   showApp();
   if (session.role === "owner") buildOwnerSections();
   await loadList();

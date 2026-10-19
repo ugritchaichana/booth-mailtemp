@@ -68,8 +68,13 @@ async function adminChecks(github, githubPort) {
   assert.equal(target.searchParams.get("scope"), "");
   assert.match(cookieOf(start, "mt_oauth"), /; HttpOnly; SameSite=Lax; Path=\/api\/admin\/auth; Max-Age=600$/);
   const oauth = cookieOf(start, "mt_oauth").split(";")[0];
-  assert.equal((await call("GET", "/api/admin/auth/callback?code=x&state=wrong", { cookie: oauth })).status, 400);
-  assert.equal((await call("GET", `/api/admin/auth/callback?code=x&state=${target.searchParams.get("state")}`)).status, 400);
+  const lands = (res, reason) => {
+    assert.equal(res.status, 302);
+    assert.equal(res.headers.get("location"), `/admin?signin=${reason}`);
+    assert.equal(cookieOf(res, "mt_admin"), undefined);
+  };
+  lands(await call("GET", "/api/admin/auth/callback?code=x&state=wrong", { cookie: oauth }), "expired");
+  lands(await call("GET", `/api/admin/auth/callback?code=x&state=${target.searchParams.get("state")}`), "expired");
 
   async function signIn(user) {
     github.signInAs(user.login);
@@ -82,8 +87,13 @@ async function adminChecks(github, githubPort) {
   }
 
   const stranger = await signIn(SSO_USERS.stranger);
-  assert.equal(stranger.res.status, 403);
-  assert.equal(stranger.cookie, undefined);
+  lands(stranger.res, "denied");
+  github.state.failToken = true;
+  lands((await signIn(SSO_USERS.owner)).res, "github");
+  github.state.failToken = false;
+  github.state.deny = true;
+  lands((await signIn(SSO_USERS.owner)).res, "cancelled");
+  github.state.deny = false;
   const owner = await signIn(SSO_USERS.owner);
   assert.equal(owner.res.status, 302);
   assert.equal(owner.res.headers.get("location"), "/admin");
@@ -126,7 +136,7 @@ async function adminChecks(github, githubPort) {
   assert.equal((await call("POST", "/api/admin/admins/remove", { body: { github_id: SSO_USERS.owner.id }, cookie: owner.cookie })).status, 400);
   assert.equal((await call("POST", "/api/admin/admins/remove", { body: { github_id: SSO_USERS.admin.id }, cookie: owner.cookie })).status, 200);
   assert.equal((await call("GET", "/api/admin/stats", { cookie: helper.cookie })).status, 401, "a removed admin is locked out on the next request");
-  assert.equal((await signIn(SSO_USERS.admin)).res.status, 403);
+  lands((await signIn(SSO_USERS.admin)).res, "denied");
 
   const audit = (await json(await call("GET", "/api/admin/audit", { cookie: owner.cookie }))).entries;
   assert.deepEqual(audit.map((e) => [e.action, e.actor]).reverse(), [["admin_add", SSO_USERS.owner.login], ["delete", SSO_USERS.admin.login], ["admin_remove", SSO_USERS.owner.login]]);
