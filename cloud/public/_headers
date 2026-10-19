@@ -5,3 +5,5 @@
   Content-Security-Policy: frame-ancestors 'none'
 /index.html
   Content-Security-Policy: frame-ancestors 'none'
+/admin
+  Content-Security-Policy: frame-ancestors 'none'

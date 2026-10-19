@@ -29,7 +29,8 @@ class Statement {
   }
 
   all() {
-    return { success: true, results: this.db.prepare(this.sql).all(...this.args), meta: {} };
+    const { page_count: pages, page_size: pageSize } = this.db.prepare("SELECT page_count, page_size FROM pragma_page_count, pragma_page_size").get();
+    return { success: true, results: this.db.prepare(this.sql).all(...this.args), meta: { size_after: pages * pageSize } };
   }
 
   first(column) {

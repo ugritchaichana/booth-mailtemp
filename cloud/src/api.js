@@ -1,16 +1,13 @@
 import { openAccounts, limiter } from "./sessions.js";
 import { ID_RE, usernameError } from "./rules.js";
 import { hide, lastIngest, listFor, markRead, ownMessage, rawStream } from "./store.js";
+import { handleAdmin } from "./admin.js";
+import { fail, json } from "./http.js";
 
 const RANDOM_CHARS = "abcdefghijklmnopqrstuvwxyz0123456789";
 const MAX_BODY = 2048;
 const CURSOR_RE = /^\d{1,15}$/;
 
-const json = (status, body, extra = {}) => new Response(JSON.stringify(body), {
-  status,
-  headers: { "Content-Type": "application/json", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", ...extra },
-});
-const fail = (status, error) => json(status, { error });
 
 async function readUsername(request) {
   if (!(request.headers.get("content-type") ?? "").toLowerCase().startsWith("application/json")) return fail(415, "expected application/json");
@@ -40,6 +37,7 @@ export async function handle(request, env, ctx) {
 
   const { pathname } = url;
   const method = request.method;
+  if (pathname === "/api/admin" || pathname.startsWith("/api/admin/")) return handleAdmin(request, env);
   if (method === "GET" && pathname === "/api/status") {
     try {
       const at = await lastIngest(db);

@@ -156,7 +156,7 @@ export function scrubHead(bytes, username, domain) {
   return out;
 }
 
-export function rawStream(db, message, username, domain) {
+export function chunkStream(db, message, head = (bytes) => bytes) {
   let seq = 0;
   return new ReadableStream({
     async pull(controller) {
@@ -164,12 +164,14 @@ export function rawStream(db, message, username, domain) {
       const data = await db.prepare("SELECT data FROM chunks WHERE message_id = ? AND seq = ?").bind(message.id, seq).first("data");
       if (data == null) return controller.error(new Error("chunk missing"));
       const bytes = decodeChunk(data);
-      controller.enqueue(seq === 0 ? scrubHead(bytes, username, domain) : bytes);
+      controller.enqueue(seq === 0 ? head(bytes) : bytes);
       seq += 1;
       if (seq >= message.chunks) controller.close();
     },
   });
 }
+
+export const rawStream = (db, message, username, domain) => chunkStream(db, message, (bytes) => scrubHead(bytes, username, domain));
 
 export async function lastIngest(db) {
   const row = await db.prepare("SELECT MAX(created) AS at FROM messages").first();
@@ -177,6 +179,24 @@ export async function lastIngest(db) {
 }
 
 const JANITOR_BATCH = 20;
+const DELETE_BATCH = 50;
+
+export async function deleteMessages(db, ids) {
+  let deleted = 0;
+  for (let at = 0; at < ids.length; at += DELETE_BATCH) {
+    const part = ids.slice(at, at + DELETE_BATCH);
+    const marks = part.map(() => "?").join(", ");
+    const results = await db.batch([
+      db.prepare(`DELETE FROM chunks WHERE message_id IN (${marks})`).bind(...part),
+      db.prepare(`DELETE FROM hidden WHERE id IN (${marks})`).bind(...part),
+      db.prepare(`DELETE FROM reads WHERE id IN (${marks})`).bind(...part),
+      db.prepare(`DELETE FROM recipients WHERE message_id IN (${marks})`).bind(...part),
+      db.prepare(`DELETE FROM messages WHERE id IN (${marks})`).bind(...part),
+    ]);
+    deleted += results.at(-1).meta?.changes ?? 0;
+  }
+  return deleted;
+}
 
 export async function janitor(db, { storedBytesCap, sessionSeconds }) {
   const stamp = now();
@@ -191,16 +211,7 @@ export async function janitor(db, { storedBytesCap, sessionSeconds }) {
       ids.push(row.id);
       excess -= row.stored;
     }
-    if (ids.length) {
-      const marks = ids.map(() => "?").join(", ");
-      await db.batch([
-        db.prepare(`DELETE FROM chunks WHERE message_id IN (${marks})`).bind(...ids),
-        db.prepare(`DELETE FROM hidden WHERE id IN (${marks})`).bind(...ids),
-        db.prepare(`DELETE FROM reads WHERE id IN (${marks})`).bind(...ids),
-        db.prepare(`DELETE FROM messages WHERE id IN (${marks})`).bind(...ids),
-      ]);
-      report.deleted = ids.length;
-    }
+    if (ids.length) report.deleted = await deleteMessages(db, ids);
   }
   const orphans = await db.prepare(
     `DELETE FROM chunks WHERE rowid IN (SELECT rowid FROM chunks WHERE created < ? AND message_id NOT IN (SELECT id FROM messages) LIMIT 50)`,
