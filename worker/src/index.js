@@ -1,56 +1,28 @@
 import { runMonitorSafely } from "./monitor.js";
+import { KV_TTL_SECONDS } from "./constants.js";
 
-const PUSH_TIMEOUT_MS = 15000;
-const KV_TTL_SECONDS = 604800;
+const INGEST_TIMEOUT_MS = 15000;
 const REPLAY_BATCH = 15;
 
 const log = (event, fields = {}) => console.log(JSON.stringify({ event, ...fields }));
-const toHex = (bytes) => [...new Uint8Array(bytes)].map((b) => b.toString(16).padStart(2, "0")).join("");
 
-async function sign(env, captureId, timestamp, body) {
-  const bodyHash = toHex(await crypto.subtle.digest("SHA-256", body));
-  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(env.HMAC_KEY), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-  const mac = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`${captureId}.${timestamp}.${bodyHash}`));
-  return toHex(mac);
-}
-
-async function push(env, captureId, body, from, to) {
-  const timestamp = String(Math.floor(Date.now() / 1000));
-  const headers = {
-    "X-Capture-Id": captureId,
-    "X-Capture-Timestamp": timestamp,
-    "X-Capture-Signature": await sign(env, captureId, timestamp, body),
-    "X-Envelope-From": from,
-    "X-Envelope-To": to,
-  };
-  if (env.CF_ACCESS_CLIENT_ID && env.CF_ACCESS_CLIENT_SECRET) {
-    headers["CF-Access-Client-Id"] = env.CF_ACCESS_CLIENT_ID;
-    headers["CF-Access-Client-Secret"] = env.CF_ACCESS_CLIENT_SECRET;
-  }
-  const res = await fetch(env.BRIDGE_URL, { method: "POST", headers, body, signal: AbortSignal.timeout(PUSH_TIMEOUT_MS) });
-  await res.body?.cancel();
-  if (res.status < 200 || res.status > 299) throw new Error(`bridge status ${res.status}`);
-}
-
-function copyToCloud(env, ctx, captureId, body, from, to) {
+async function ingest(env, body, from, to) {
+  let timer;
+  const timeout = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("ingest timeout")), INGEST_TIMEOUT_MS); });
   try {
-    if (!env.CLOUD) return;
-    const copy = (async () => {
-      try {
-        const result = await env.CLOUD.ingest(body, { from, to: [to] });
-        log("CLOUD_COPY_OK", { captureId, id: result?.id, stored: result?.stored, size: body.byteLength });
-      } catch (err) {
-        log("CLOUD_COPY_ERROR", { captureId, size: body.byteLength, error: String(err?.message ?? err).slice(0, 200) });
-      }
-    })();
-    ctx?.waitUntil(copy);
-  } catch {
-    log("CLOUD_COPY_ERROR", { captureId, size: body.byteLength, error: "setup" });
+    return await Promise.race([env.CLOUD.ingest(body, { from, to: [to] }), timeout]);
+  } finally {
+    clearTimeout(timer);
   }
+}
+
+function logOutcome(captureId, to, size, result, extra = {}) {
+  if (result?.stored === false) log("CAPTURE_NOT_STORED", { captureId, size, reason: String(result.reason ?? "").slice(0, 100), ...extra });
+  else log("CAPTURE_DELIVERED", { captureId, to, size, target: "cloud", ...extra });
 }
 
 export default {
-  async email(message, env, ctx) {
+  async email(message, env) {
     const captureId = crypto.randomUUID();
     const from = message.from;
     const to = message.to;
@@ -62,14 +34,13 @@ export default {
       return;
     }
 
-    let pushError = "";
+    let ingestError = "";
     try {
-      await push(env, captureId, body, from, to);
-      log("CAPTURE_DELIVERED", { captureId, to, size: body.byteLength });
-      copyToCloud(env, ctx, captureId, body, from, to);
+      const result = await ingest(env, body, from, to);
+      logOutcome(captureId, to, body.byteLength, result);
       return;
     } catch (err) {
-      pushError = String(err);
+      ingestError = String(err?.message ?? err).slice(0, 200);
     }
 
     try {
@@ -77,7 +48,7 @@ export default {
         metadata: { from, to, size: body.byteLength },
         expirationTtl: KV_TTL_SECONDS,
       });
-      log("CAPTURE_FALLBACK", { captureId, to, size: body.byteLength, reason: pushError });
+      log("CAPTURE_FALLBACK", { captureId, to, size: body.byteLength, reason: ingestError });
     } catch (err) {
       log("CAPTURE_ERROR", { captureId, to, stage: "kv-put", error: String(err) });
       if (env.LAST_RESORT === "rethrow") throw err;
@@ -92,9 +63,9 @@ export default {
       try {
         const entry = await env.CAPTURE_FALLBACK.getWithMetadata(name, "arrayBuffer");
         if (!entry.value) continue;
-        await push(env, name, entry.value, entry.metadata.from, entry.metadata.to);
+        const result = await ingest(env, entry.value, entry.metadata.from, entry.metadata.to);
         await env.CAPTURE_FALLBACK.delete(name);
-        log("CAPTURE_DELIVERED", { captureId: name, to: entry.metadata.to, size: entry.metadata.size, replay: true });
+        logOutcome(name, entry.metadata.to, entry.metadata.size, result, { replay: true });
       } catch (err) {
         log("CAPTURE_ERROR", { captureId: name, stage: "replay", error: String(err) });
       }

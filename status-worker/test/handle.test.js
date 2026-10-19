@@ -1,66 +1,39 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { handle } from "../src/index.js";
+import worker, { handle, TARGET_URL } from "../src/index.js";
 
-const page = (path = "/") => new Request(`https://mailpit.booth.pp.ua${path}`);
-const origin = (response) => async () => response;
+const request = (path) => new Request(`https://mailpit.booth.pp.ua${path}`);
 
-test("a healthy origin response passes through untouched", async () => {
-  const upstream = new Response("<html>inbox</html>", { status: 200, headers: { "X-Origin": "yes" } });
-  const response = await handle(page("/"), origin(upstream));
-  assert.equal(response, upstream);
-  assert.equal(response.status, 200);
-  assert.equal(await response.text(), "<html>inbox</html>");
-  assert.equal(response.headers.get("X-Origin"), "yes");
-});
-
-for (const status of [502, 503, 504, 520, 521, 522, 523, 524, 525, 526, 527, 530]) {
-  test(`origin status ${status} on / serves the fallback page`, async () => {
-    const response = await handle(page("/"), origin(new Response("tunnel error", { status })));
-    assert.equal(response.status, 503);
-    assert.match(response.headers.get("Content-Type"), /text\/html/);
-    assert.equal(response.headers.get("Retry-After"), "15");
-    const body = await response.text();
-    assert.match(body, /System is down/);
-    assert.match(body, /Your mail is safe and queued/);
-    assert.match(body, /15000/);
+for (const path of ["/", "/index.html", "/?x=1", "/api/status", "/admin/"]) {
+  test(`${path} redirects to the cloud inbox`, async () => {
+    const response = await worker.fetch(request(path));
+    assert.equal(response.status, 302);
+    assert.equal(response.headers.get("Location"), "https://mail.booth.pp.ua/");
+    assert.equal(response.headers.get("Cache-Control"), "no-store");
+    assert.equal(await response.text(), "");
   });
 }
 
-test("a thrown fetch on / serves the fallback page", async () => {
-  const response = await handle(page("/"), async () => { throw new TypeError("network"); });
-  assert.equal(response.status, 503);
-  assert.match(await response.text(), /System is down/);
-});
-
-test("/index.html gets the same protection", async () => {
-  const response = await handle(page("/index.html"), origin(new Response("x", { status: 530 })));
-  assert.equal(response.status, 503);
-});
-
-test("origin 404 and 500 on / are not replaced", async () => {
-  for (const status of [404, 500, 401]) {
-    const upstream = new Response("origin says no", { status });
-    assert.equal(await handle(page("/"), origin(upstream)), upstream);
+test("the redirect does not call the origin", async () => {
+  const realFetch = globalThis.fetch;
+  let called = 0;
+  globalThis.fetch = async () => { called += 1; return new Response("origin"); };
+  try {
+    await worker.fetch(request("/"));
+  } finally {
+    globalThis.fetch = realFetch;
   }
+  assert.equal(called, 0);
 });
 
-test("a non-root path is passed through even when the origin is down", async () => {
-  for (const path of ["/api/status", "/api/messages", "/vendor/app.css", "/admin/"]) {
-    const upstream = new Response("tunnel error", { status: 530 });
-    const response = await handle(page(path), origin(upstream));
-    assert.equal(response, upstream, path);
-    assert.equal(response.status, 530);
-  }
+test("the redirect target is the cloud inbox root", () => {
+  assert.equal(new URL(TARGET_URL).origin, "https://mail.booth.pp.ua");
+  assert.equal(handle().headers.get("Location"), TARGET_URL);
 });
 
-test("a thrown fetch on a non-root path is not swallowed", async () => {
-  await assert.rejects(handle(page("/api/status"), async () => { throw new TypeError("network"); }), TypeError);
-});
-
-test("the fallback page is self-contained", async () => {
-  const body = await (await handle(page("/"), async () => { throw new Error("down"); })).text();
-  assert.doesNotMatch(body, /<link /);
-  assert.doesNotMatch(body, /<script src=/);
-  assert.doesNotMatch(body, /https?:\/\/(?!www\.w3\.org)/);
+test("routes in wrangler.toml cover only the page paths", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const toml = await readFile(new URL("../wrangler.toml", import.meta.url), "utf8");
+  const patterns = [...toml.matchAll(/pattern = "([^"]+)"/g)].map((m) => m[1]);
+  assert.deepEqual(patterns, ["mailpit.booth.pp.ua/", "mailpit.booth.pp.ua/index.html"]);
 });
