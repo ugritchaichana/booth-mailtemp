@@ -8,9 +8,17 @@ const MAX_RECIPIENTS = 20;
 const LIST_LIMIT = 200;
 const SCRUB_BYTES = 262144;
 const ORPHAN_AGE_SECONDS = 3600;
+const CREATED_SKEW_SECONDS = 300;
+const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/;
 
 const now = () => Math.floor(Date.now() / 1000);
 const latin1 = new TextDecoder("windows-1252");
+
+export function resolveCreated(createdAt, at = now()) {
+  if (typeof createdAt !== "string" || !ISO_TIME.test(createdAt)) return at;
+  const seconds = Math.floor(Date.parse(createdAt) / 1000);
+  return Number.isFinite(seconds) && seconds >= 0 && seconds <= at + CREATED_SKEW_SECONDS ? seconds : at;
+}
 
 export function toBytes(value) {
   if (value instanceof Uint8Array) return value;
@@ -62,7 +70,7 @@ const recipientStatement = (db, id, rows) => db.prepare(
   `INSERT OR IGNORE INTO recipients (message_id, address, local, kind) VALUES ${rows.map(() => "(?, ?, ?, ?)").join(", ")}`,
 ).bind(...rows.flatMap((r) => [id, r.address, r.local, r.kind]));
 
-export async function ingest(db, raw, envelope, domain) {
+export async function ingest(db, raw, envelope, domain, options = {}) {
   const bytes = await readAll(raw);
   if (bytes.length > MAX_RAW_BYTES) throw new Error(`message exceeds ${MAX_RAW_BYTES} bytes`);
   const summary = await summarize(bytes);
@@ -73,12 +81,13 @@ export async function ingest(db, raw, envelope, domain) {
     await recipientStatement(db, id, rows).run();
     return { stored: true, duplicate: true, id };
   }
-  const created = now();
+  const stamp = now();
+  const created = resolveCreated(options?.createdAt, stamp);
   const parts = splitChunks(bytes).map(encodeChunk);
   const stored = parts.reduce((n, p) => n + p.length, 0);
   for (let i = 0; i < parts.length; i += CHUNKS_PER_BATCH) {
     await db.batch(parts.slice(i, i + CHUNKS_PER_BATCH).map((part, k) =>
-      db.prepare("INSERT OR REPLACE INTO chunks (message_id, seq, created, data) VALUES (?, ?, ?, ?)").bind(id, i + k, created, part)));
+      db.prepare("INSERT OR REPLACE INTO chunks (message_id, seq, created, data) VALUES (?, ?, ?, ?)").bind(id, i + k, stamp, part)));
   }
   await db.batch([
     db.prepare("INSERT OR IGNORE INTO messages (id, created, from_name, from_addr, to_json, cc_json, subject, date_header, size, stored, attachments, snippet, chunks) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
