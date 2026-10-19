@@ -5,18 +5,20 @@ import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { createFakeGithub } from "./fake-github.mjs";
 
 export const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const wrangler = path.join(root, "node_modules", "wrangler", "bin", "wrangler.js");
 
-export async function startDev({ port, adminPassword }) {
+export async function startDev({ port, vars = {} }) {
   const token = crypto.randomUUID();
   const base = `http://127.0.0.1:${port}`;
   const devVars = path.join(root, ".dev.vars");
   const probeVars = path.join(root, "test", "probe", ".dev.vars");
   const persist = fs.mkdtempSync(path.join(os.tmpdir(), "mailtemp-cloud-"));
   let log = "";
-  fs.writeFileSync(devVars, `SESSION_KEY=${crypto.randomBytes(24).toString("hex")}\n${adminPassword ? `ADMIN_PASSWORD=${adminPassword}\n` : ""}`);
+  const lines = Object.entries({ SESSION_KEY: crypto.randomBytes(24).toString("hex"), ...vars }).map(([key, value]) => `${key}=${value}\n`);
+  fs.writeFileSync(devVars, lines.join(""));
   fs.writeFileSync(probeVars, `PROBE_TOKEN=${token}\n`);
   const migrate = spawnSync(process.execPath, [wrangler, "d1", "migrations", "apply", "DB", "--local", "--persist-to", persist], { cwd: root, encoding: "utf8" });
   assert.equal(migrate.status, 0, migrate.stdout + migrate.stderr);
@@ -46,4 +48,32 @@ export async function probeIngest(base, token, params) {
   const body = await res.json();
   assert.equal(res.status, 200, JSON.stringify(body));
   return body;
+}
+
+export const SSO_USERS = {
+  owner: { id: 7001, login: "sso-owner" },
+  admin: { id: 7002, login: "sso-helper" },
+  stranger: { id: 7003, login: "sso-stranger" },
+};
+
+export async function startSsoDev({ port, interactive = false }) {
+  const github = createFakeGithub({ interactive });
+  for (const user of Object.values(SSO_USERS)) github.addAccount(user.login, user.id);
+  const githubPort = await github.listen();
+  try {
+    const dev = await startDev({
+      port,
+      vars: {
+        GITHUB_CLIENT_ID: github.clientId,
+        GITHUB_CLIENT_SECRET: github.clientSecret,
+        OWNER_GITHUB_IDS: String(SSO_USERS.owner.id),
+        GITHUB_OAUTH_BASE: `http://localhost:${githubPort}`,
+        GITHUB_API_BASE: `http://127.0.0.1:${githubPort}`,
+      },
+    });
+    return { ...dev, github, githubPort, stop: async () => { await dev.stop(); await github.close(); } };
+  } catch (err) {
+    await github.close();
+    throw err;
+  }
 }

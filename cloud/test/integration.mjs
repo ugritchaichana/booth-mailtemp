@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import { buildMessage } from "./probe/worker.js";
-import { probeIngest, startDev } from "./dev-server.mjs";
+import { SSO_USERS, probeIngest, startSsoDev } from "./dev-server.mjs";
 
 const MIB = 1024 * 1024;
 const sizes = { small: 100_000, medium: 5 * MIB, large: 24 * MIB };
@@ -10,7 +10,6 @@ const live = Boolean(process.env.PROBE_URL);
 const port = Number(process.env.PORT ?? 8799);
 const base = live ? (process.env.PUBLIC_URL ?? "https://mail.booth.pp.ua") : `http://127.0.0.1:${port}`;
 const probeBase = live ? process.env.PROBE_URL : base;
-const adminPassword = crypto.randomBytes(12).toString("hex");
 const owner = live ? "cloudcheck" : "inboxcheck";
 let token = live ? process.env.PROBE_TOKEN : null;
 let dev = null;
@@ -42,45 +41,99 @@ class Browser {
   }
 }
 
-async function adminChecks() {
+async function adminChecks(github, githubPort) {
   const call = (method, pathname, { body, cookie, csrf = true } = {}) => fetch(`${base}${pathname}`, {
     method,
     headers: { ...(body ? { "Content-Type": "application/json" } : {}), ...(csrf && method !== "GET" ? { "X-Admin": "1" } : {}), ...(cookie ? { Cookie: cookie } : {}) },
     body: body ? JSON.stringify(body) : undefined,
     redirect: "manual",
   });
+  const cookieOf = (res, name) => res.headers.getSetCookie().find((c) => c.startsWith(`${name}=`));
+  const json = async (res) => res.json();
+
   const page = await call("GET", "/admin");
   assert.equal(page.status, 200, "/admin serves admin.html without a redirect");
   assert.match(page.headers.get("content-type"), /text\/html/);
   assert.equal(page.headers.get("content-security-policy"), "frame-ancestors 'none'");
-  assert.match(await page.text(), /Admin sign in/);
-  for (const p of ["/api/admin/stats", "/api/admin/messages", "/api/admin/messages/abc/raw"]) assert.equal((await call("GET", p)).status, 401, p);
-  assert.equal((await call("POST", "/api/admin/login", { body: { password: adminPassword }, csrf: false })).status, 403);
-  assert.equal((await call("POST", "/api/admin/login", { body: { password: "wrong" } })).status, 401);
-  const login = await call("POST", "/api/admin/login", { body: { password: adminPassword } });
-  assert.equal(login.status, 200);
-  const cookie = login.headers.get("set-cookie").split(";")[0];
-  assert.match(login.headers.get("set-cookie"), /HttpOnly; SameSite=Strict; Path=\/api\/admin/);
+  assert.match(await page.text(), /Sign in with GitHub/);
+  for (const p of ["/api/admin/me", "/api/admin/stats", "/api/admin/messages", "/api/admin/messages/abc/raw", "/api/admin/admins", "/api/admin/audit"]) assert.equal((await call("GET", p)).status, 401, p);
 
+  const start = await call("GET", "/api/admin/auth/login");
+  assert.equal(start.status, 302);
+  const target = new URL(start.headers.get("location"));
+  assert.equal(target.origin, `http://localhost:${githubPort}`);
+  assert.equal(target.pathname, "/login/oauth/authorize");
+  assert.equal(target.searchParams.get("client_id"), github.clientId);
+  assert.equal(target.searchParams.get("redirect_uri"), `${base}/api/admin/auth/callback`);
+  assert.equal(target.searchParams.get("scope"), "");
+  assert.match(cookieOf(start, "mt_oauth"), /; HttpOnly; SameSite=Lax; Path=\/api\/admin\/auth; Max-Age=600$/);
+  const oauth = cookieOf(start, "mt_oauth").split(";")[0];
+  assert.equal((await call("GET", "/api/admin/auth/callback?code=x&state=wrong", { cookie: oauth })).status, 400);
+  assert.equal((await call("GET", `/api/admin/auth/callback?code=x&state=${target.searchParams.get("state")}`)).status, 400);
+
+  async function signIn(user) {
+    github.signInAs(user.login);
+    const first = await call("GET", "/api/admin/auth/login");
+    const approved = await fetch(first.headers.get("location"), { redirect: "manual" });
+    const callback = new URL(approved.headers.get("location"));
+    assert.equal(`${callback.origin}${callback.pathname}`, `${base}/api/admin/auth/callback`);
+    const res = await call("GET", callback.pathname + callback.search, { cookie: cookieOf(first, "mt_oauth").split(";")[0] });
+    return { res, cookie: cookieOf(res, "mt_admin")?.split(";")[0] };
+  }
+
+  const stranger = await signIn(SSO_USERS.stranger);
+  assert.equal(stranger.res.status, 403);
+  assert.equal(stranger.cookie, undefined);
+  const owner = await signIn(SSO_USERS.owner);
+  assert.equal(owner.res.status, 302);
+  assert.equal(owner.res.headers.get("location"), "/admin");
+  assert.match(cookieOf(owner.res, "mt_admin"), /; HttpOnly; SameSite=Strict; Path=\/api\/admin; Max-Age=43200$/);
+  assert.deepEqual(await json(await call("GET", "/api/admin/me", { cookie: owner.cookie })), { ...SSO_USERS.owner, role: "owner" });
+
+  assert.equal((await call("POST", "/api/admin/login", { body: { password: "anything" }, cookie: owner.cookie })).status, 404, "password login is gone");
   const reserved = await ingest({ size: 30_000, to: "qa1@booth.pp.ua", id: "admin-reserved", subject: "admin reserved" });
   assert.equal(reserved.result.stored, true);
-  const listed = await (await call("GET", "/api/admin/messages?q=qa1%40booth", { cookie })).json();
+  const listed = await json(await call("GET", "/api/admin/messages?q=qa1%40booth", { cookie: owner.cookie }));
   assert.deepEqual(listed.messages.map((m) => m.subject), ["admin reserved"]);
   assert.deepEqual(listed.messages[0].to, ["qa1@booth.pp.ua"]);
   const id = listed.messages[0].id;
-  const all = (await (await call("GET", "/api/admin/messages", { cookie })).json()).messages;
+  const all = (await json(await call("GET", "/api/admin/messages", { cookie: owner.cookie }))).messages;
   assert.ok(all.some((m) => m.subject === mail("small").subject) && all.some((m) => m.subject === "since mine"), "admin lists every name's mail");
-
-  const raw = new Uint8Array(await (await call("GET", `/api/admin/messages/${id}/raw`, { cookie })).arrayBuffer());
+  const raw = new Uint8Array(await (await call("GET", `/api/admin/messages/${id}/raw`, { cookie: owner.cookie })).arrayBuffer());
   assert.equal(sha(raw), sha(buildMessage({ size: 30_000, to: "qa1@booth.pp.ua", id: "admin-reserved", subject: "admin reserved" })));
-  const stats = await (await call("GET", "/api/admin/stats", { cookie })).json();
+  const stats = await json(await call("GET", "/api/admin/stats", { cookie: owner.cookie }));
   assert.ok(stats.messages >= all.length && stats.storedBytes > 0 && stats.d1SizeBytes > 0 && stats.storedBytesCap === 400000000, JSON.stringify(stats));
 
-  assert.equal((await call("POST", "/api/admin/delete", { body: { ids: [id] }, cookie, csrf: false })).status, 403);
-  assert.deepEqual(await (await call("POST", "/api/admin/delete", { body: { ids: [id] }, cookie })).json(), { deleted: 1 });
-  assert.equal((await call("GET", `/api/admin/messages/${id}/raw`, { cookie })).status, 404);
-  assert.equal((await call("POST", "/api/admin/logout", { body: {}, cookie })).status, 200);
-  console.log(`admin: /admin served, ${all.length} messages listed across all names, raw byte-identical, delete verified, d1SizeBytes=${stats.d1SizeBytes}`);
+  assert.equal((await call("POST", "/api/admin/admins", { body: { login: SSO_USERS.admin.login }, cookie: owner.cookie, csrf: false })).status, 403);
+  assert.equal((await call("POST", "/api/admin/admins", { body: { login: SSO_USERS.owner.login }, cookie: owner.cookie })).status, 400);
+  assert.equal((await call("POST", "/api/admin/admins", { body: { login: "no-such-user-here" }, cookie: owner.cookie })).status, 404);
+  assert.equal((await call("POST", "/api/admin/admins", { body: { login: SSO_USERS.admin.login }, cookie: owner.cookie })).status, 200);
+  const admins = await json(await call("GET", "/api/admin/admins", { cookie: owner.cookie }));
+  assert.deepEqual(admins.admins.map((a) => [a.id, a.login]), [[SSO_USERS.admin.id, SSO_USERS.admin.login]]);
+
+  const helper = await signIn(SSO_USERS.admin);
+  assert.equal(helper.res.status, 302);
+  assert.deepEqual(await json(await call("GET", "/api/admin/me", { cookie: helper.cookie })), { ...SSO_USERS.admin, role: "admin" });
+  assert.equal((await call("GET", "/api/admin/stats", { cookie: helper.cookie })).status, 200);
+  for (const [method, p, body] of [["GET", "/api/admin/admins"], ["GET", "/api/admin/audit"], ["POST", "/api/admin/admins", { login: SSO_USERS.stranger.login }], ["POST", "/api/admin/admins/remove", { github_id: SSO_USERS.admin.id }]]) {
+    assert.equal((await call(method, p, { body, cookie: helper.cookie })).status, 403, `admin must not reach ${method} ${p}`);
+  }
+
+  assert.equal((await call("POST", "/api/admin/delete", { body: { ids: [id] }, cookie: helper.cookie, csrf: false })).status, 403);
+  assert.deepEqual(await json(await call("POST", "/api/admin/delete", { body: { ids: [id] }, cookie: helper.cookie })), { deleted: 1 });
+  assert.equal((await call("GET", `/api/admin/messages/${id}/raw`, { cookie: helper.cookie })).status, 404);
+
+  assert.equal((await call("POST", "/api/admin/admins/remove", { body: { github_id: SSO_USERS.owner.id }, cookie: owner.cookie })).status, 400);
+  assert.equal((await call("POST", "/api/admin/admins/remove", { body: { github_id: SSO_USERS.admin.id }, cookie: owner.cookie })).status, 200);
+  assert.equal((await call("GET", "/api/admin/stats", { cookie: helper.cookie })).status, 401, "a removed admin is locked out on the next request");
+  assert.equal((await signIn(SSO_USERS.admin)).res.status, 403);
+
+  const audit = (await json(await call("GET", "/api/admin/audit", { cookie: owner.cookie }))).entries;
+  assert.deepEqual(audit.map((e) => [e.action, e.actor]).reverse(), [["admin_add", SSO_USERS.owner.login], ["delete", SSO_USERS.admin.login], ["admin_remove", SSO_USERS.owner.login]]);
+  assert.equal((await call("POST", "/api/admin/logout", { body: {}, cookie: owner.cookie })).status, 200);
+  const lookups = github.requests.filter((r) => r.path.startsWith("/users/"));
+  assert.ok(lookups.length >= 3 && lookups.every((r) => r.authorization === null), "username lookups carry no credentials");
+  console.log(`admin: github sign-in as owner and admin, roles enforced, ${all.length} messages listed across all names, raw byte-identical, delete and admin changes audited, removed admin locked out, d1SizeBytes=${stats.d1SizeBytes}`);
 }
 
 const mail = (name) => ({
@@ -91,7 +144,7 @@ const mail = (name) => ({
 
 try {
   if (!live) {
-    dev = await startDev({ port, adminPassword });
+    dev = await startSsoDev({ port });
     token = dev.token;
   }
   const status = await (await fetch(`${base}/api/status`)).json();
@@ -174,7 +227,7 @@ try {
     assert.equal((await (await alice.call("POST", "/api/forget", { username: owner })).json()).active, null);
     assert.equal((await alice.call("GET", "/api/me")).status, 401);
   }
-  if (!live) await adminChecks();
+  if (!live) await adminChecks(dev.github, dev.githubPort);
   console.log("integration: all checks passed");
 } finally {
   await dev?.stop();
