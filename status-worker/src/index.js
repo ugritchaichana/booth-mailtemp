@@ -1,18 +1,18 @@
 export const TARGET_URL = "https://mail.booth.pp.ua/";
-export const REDIRECT_SECONDS = 5;
+export const REDIRECT_SECONDS = 10;
 
 const PAGE = `<!doctype html>
-<html lang="th">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
 <meta name="color-scheme" content="light dark">
 <meta http-equiv="refresh" content="${REDIRECT_SECONDS};url=${TARGET_URL}">
-<title>ระบบย้ายไปที่ mail.booth.pp.ua แล้ว</title>
+<title>Moved to mail.booth.pp.ua</title>
 <style>
-:root{--bg:#f4f6f8;--card:#fff;--text:#1f2933;--muted:#5b6770;--line:#dde3e8;--head:#2c3e50;--accent:#2c3e50;--accent-text:#fff;--track:#dde3e8}
-@media (prefers-color-scheme:dark){:root{--bg:#121820;--card:#1b2530;--text:#e6ebf0;--muted:#9aa7b3;--line:#2c3947;--accent:#6c9bd1;--accent-text:#0e1620;--track:#2c3947}}
+:root{--bg:#f4f6f8;--card:#fff;--text:#1f2933;--line:#dde3e8;--head:#2c3e50;--accent:#2c3e50;--accent-text:#fff;--track:#dde3e8}
+@media (prefers-color-scheme:dark){:root{--bg:#121820;--card:#1b2530;--text:#e6ebf0;--line:#2c3947;--accent:#6c9bd1;--accent-text:#0e1620;--track:#2c3947}}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--text);font:16px/1.65 system-ui,-apple-system,"Segoe UI","Noto Sans Thai","Leelawadee UI",Tahoma,sans-serif}
 header{background:var(--head);color:#fff;padding:14px 20px;font-weight:600;letter-spacing:.2px}
@@ -26,18 +26,16 @@ p{margin:12px 0}
 @media (prefers-reduced-motion:reduce){.bar i{animation:none;width:100%}}
 .go{display:block;text-align:center;background:var(--accent);color:var(--accent-text);text-decoration:none;font-weight:700;font-size:1.2rem;padding:14px 20px;border-radius:10px}
 .go:hover,.go:focus-visible{filter:brightness(1.12);outline:3px solid var(--accent);outline-offset:2px}
-.en{margin-top:24px;padding-top:16px;border-top:1px solid var(--line);color:var(--muted);font-size:.95rem}
 </style>
 </head>
 <body>
 <header>Mailpit</header>
 <main>
 <div class="card">
-<h1>ระบบย้ายไปที่ mail.booth.pp.ua แล้ว</h1>
-<p>ที่อยู่อีเมลยังเหมือนเดิม (ชื่อ@booth.pp.ua) — กำลังพาไปหน้าใหม่ใน ${REDIRECT_SECONDS} วินาที</p>
-<div class="bar" role="progressbar" aria-label="กำลังพาไปหน้าใหม่"><i></i></div>
-<a class="go" href="${TARGET_URL}">ไปเลย</a>
-<p class="en" lang="en">This service has moved to mail.booth.pp.ua. Email addresses (@booth.pp.ua) are unchanged.</p>
+<h1>Moved to mail.booth.pp.ua</h1>
+<p>Email addresses are unchanged. Redirecting in ${REDIRECT_SECONDS} seconds.</p>
+<div class="bar" role="progressbar" aria-label="Redirecting"><i></i></div>
+<a class="go" href="${TARGET_URL}">Go now</a>
 </div>
 </main>
 <script>setTimeout(function(){location.replace("${TARGET_URL}")},${REDIRECT_SECONDS * 1000})</script>
