@@ -1,14 +1,8 @@
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import { spawn, spawnSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
 import { buildMessage } from "./probe/worker.js";
+import { probeIngest, startDev } from "./dev-server.mjs";
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const wrangler = path.join(root, "node_modules", "wrangler", "bin", "wrangler.js");
 const MIB = 1024 * 1024;
 const sizes = { small: 100_000, medium: 5 * MIB, large: 24 * MIB };
 const sha = (bytes) => crypto.createHash("sha256").update(bytes).digest("hex");
@@ -16,50 +10,12 @@ const live = Boolean(process.env.PROBE_URL);
 const port = Number(process.env.PORT ?? 8799);
 const base = live ? (process.env.PUBLIC_URL ?? "https://mail.booth.pp.ua") : `http://127.0.0.1:${port}`;
 const probeBase = live ? process.env.PROBE_URL : base;
-const token = live ? process.env.PROBE_TOKEN : crypto.randomUUID();
-const devVars = path.join(root, ".dev.vars");
-const probeVars = path.join(root, "test", "probe", ".dev.vars");
-const persist = live ? null : fs.mkdtempSync(path.join(os.tmpdir(), "mailtemp-cloud-"));
+const adminPassword = crypto.randomBytes(12).toString("hex");
 const owner = live ? "cloudcheck" : "inboxcheck";
+let token = live ? process.env.PROBE_TOKEN : null;
 let dev = null;
-let devLog = "";
 
-async function startLocal() {
-  fs.writeFileSync(devVars, `SESSION_KEY=${crypto.randomBytes(24).toString("hex")}\n`);
-  fs.writeFileSync(probeVars, `PROBE_TOKEN=${token}\n`);
-  const migrate = spawnSync(process.execPath, [wrangler, "d1", "migrations", "apply", "DB", "--local", "--persist-to", persist], { cwd: root, encoding: "utf8" });
-  assert.equal(migrate.status, 0, migrate.stdout + migrate.stderr);
-  dev = spawn(process.execPath, [wrangler, "dev", "-c", "test/probe/wrangler.toml", "-c", "wrangler.toml", "--local", "--port", String(port), "--persist-to", persist], { cwd: root, stdio: ["ignore", "pipe", "pipe"] });
-  dev.stdout.on("data", (d) => { devLog += d; });
-  dev.stderr.on("data", (d) => { devLog += d; });
-  for (let i = 0; i < 120; i += 1) {
-    try {
-      if ((await fetch(`${base}/api/status`)).status === 200) return;
-    } catch {}
-    await new Promise((r) => setTimeout(r, 500));
-  }
-  throw new Error(`wrangler dev did not start\n${devLog}`);
-}
-
-async function cleanup() {
-  if (dev) {
-    if (process.platform === "win32") spawnSync("taskkill", ["/pid", String(dev.pid), "/T", "/F"]);
-    else dev.kill();
-    await new Promise((r) => setTimeout(r, 1000));
-  }
-  fs.rmSync(devVars, { force: true });
-  fs.rmSync(probeVars, { force: true });
-  if (persist) {
-    try { fs.rmSync(persist, { recursive: true, force: true }); } catch {}
-  }
-}
-
-async function ingest(params) {
-  const res = await fetch(`${probeBase}/__probe/ingest?${new URLSearchParams(params)}`, { method: "POST", headers: { "x-probe-token": token } });
-  const body = await res.json();
-  assert.equal(res.status, 200, JSON.stringify(body));
-  return body;
-}
+const ingest = (params) => probeIngest(probeBase, token, params);
 
 class Browser {
   cookie = "";
@@ -86,6 +42,47 @@ class Browser {
   }
 }
 
+async function adminChecks() {
+  const call = (method, pathname, { body, cookie, csrf = true } = {}) => fetch(`${base}${pathname}`, {
+    method,
+    headers: { ...(body ? { "Content-Type": "application/json" } : {}), ...(csrf && method !== "GET" ? { "X-Admin": "1" } : {}), ...(cookie ? { Cookie: cookie } : {}) },
+    body: body ? JSON.stringify(body) : undefined,
+    redirect: "manual",
+  });
+  const page = await call("GET", "/admin");
+  assert.equal(page.status, 200, "/admin serves admin.html without a redirect");
+  assert.match(page.headers.get("content-type"), /text\/html/);
+  assert.equal(page.headers.get("content-security-policy"), "frame-ancestors 'none'");
+  assert.match(await page.text(), /Admin sign in/);
+  for (const p of ["/api/admin/stats", "/api/admin/messages", "/api/admin/messages/abc/raw"]) assert.equal((await call("GET", p)).status, 401, p);
+  assert.equal((await call("POST", "/api/admin/login", { body: { password: adminPassword }, csrf: false })).status, 403);
+  assert.equal((await call("POST", "/api/admin/login", { body: { password: "wrong" } })).status, 401);
+  const login = await call("POST", "/api/admin/login", { body: { password: adminPassword } });
+  assert.equal(login.status, 200);
+  const cookie = login.headers.get("set-cookie").split(";")[0];
+  assert.match(login.headers.get("set-cookie"), /HttpOnly; SameSite=Strict; Path=\/api\/admin/);
+
+  const reserved = await ingest({ size: 30_000, to: "qa1@booth.pp.ua", id: "admin-reserved", subject: "admin reserved" });
+  assert.equal(reserved.result.stored, true);
+  const listed = await (await call("GET", "/api/admin/messages?q=qa1%40booth", { cookie })).json();
+  assert.deepEqual(listed.messages.map((m) => m.subject), ["admin reserved"]);
+  assert.deepEqual(listed.messages[0].to, ["qa1@booth.pp.ua"]);
+  const id = listed.messages[0].id;
+  const all = (await (await call("GET", "/api/admin/messages", { cookie })).json()).messages;
+  assert.ok(all.some((m) => m.subject === mail("small").subject) && all.some((m) => m.subject === "since mine"), "admin lists every name's mail");
+
+  const raw = new Uint8Array(await (await call("GET", `/api/admin/messages/${id}/raw`, { cookie })).arrayBuffer());
+  assert.equal(sha(raw), sha(buildMessage({ size: 30_000, to: "qa1@booth.pp.ua", id: "admin-reserved", subject: "admin reserved" })));
+  const stats = await (await call("GET", "/api/admin/stats", { cookie })).json();
+  assert.ok(stats.messages >= all.length && stats.storedBytes > 0 && stats.d1SizeBytes > 0 && stats.storedBytesCap === 400000000, JSON.stringify(stats));
+
+  assert.equal((await call("POST", "/api/admin/delete", { body: { ids: [id] }, cookie, csrf: false })).status, 403);
+  assert.deepEqual(await (await call("POST", "/api/admin/delete", { body: { ids: [id] }, cookie })).json(), { deleted: 1 });
+  assert.equal((await call("GET", `/api/admin/messages/${id}/raw`, { cookie })).status, 404);
+  assert.equal((await call("POST", "/api/admin/logout", { body: {}, cookie })).status, 200);
+  console.log(`admin: /admin served, ${all.length} messages listed across all names, raw byte-identical, delete verified, d1SizeBytes=${stats.d1SizeBytes}`);
+}
+
 const mail = (name) => ({
   to: `${owner}${name === "small" ? "" : "+01"}@booth.pp.ua`,
   subject: `${owner} ${name}`,
@@ -93,7 +90,10 @@ const mail = (name) => ({
 });
 
 try {
-  if (!live) await startLocal();
+  if (!live) {
+    dev = await startDev({ port, adminPassword });
+    token = dev.token;
+  }
   const status = await (await fetch(`${base}/api/status`)).json();
   assert.equal(status.d1, "ok");
   assert.equal((await fetch(`${base}/api/messages`)).status, 401);
@@ -174,8 +174,9 @@ try {
     assert.equal((await (await alice.call("POST", "/api/forget", { username: owner })).json()).active, null);
     assert.equal((await alice.call("GET", "/api/me")).status, 401);
   }
+  if (!live) await adminChecks();
   console.log("integration: all checks passed");
 } finally {
-  await cleanup();
+  await dev?.stop();
 }
 process.exit(0);

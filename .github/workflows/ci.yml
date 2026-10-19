@@ -112,6 +112,12 @@ jobs:
           test -x "$path"
           echo "CHROMIUM_PATH=$path" >> "$GITHUB_ENV"
 
+      - name: Cloud admin browser check
+        working-directory: cloud
+        run: |
+          npm ci
+          node test/admin-browser.mjs
+
       - name: Isolation tests
         run: bash inbox/test/isolation.sh
 
